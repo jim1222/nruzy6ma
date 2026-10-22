@@ -1178,7 +1178,7 @@ async function exportData() {
   ].map(([name, data]) => new File([JSON.stringify(data, null, 2)], name, { type: 'application/json' }));
   if (navigator.canShare && navigator.canShare({ files })) {
     try {
-      await navigator.share({ files, title: '記帳小幫手資料' });
+      await navigator.share({ files, title: '小助手阿焙焙資料' });
       return;
     } catch (e) {
       if (e.name === 'AbortError') return;
