@@ -72,17 +72,6 @@ function avatarColor(seed) {
   return AVATAR_PALETTE[h % AVATAR_PALETTE.length];
 }
 
-function heartPoints(cx, cy, scale) {
-  const pts = [];
-  for (let i = 0; i <= 360; i += 10) {
-    const t = i * Math.PI / 180;
-    const x = 16 * Math.sin(t) ** 3;
-    const y = 13 * Math.cos(t) - 5 * Math.cos(2 * t) - 2 * Math.cos(3 * t) - Math.cos(4 * t);
-    pts.push(`${(cx + x * scale).toFixed(2)},${(cy - y * scale).toFixed(2)}`);
-  }
-  return pts.join(' ');
-}
-
 let toastTimer = null;
 function toast(text, duration = 1800) {
   const el = $('#toast');
@@ -1585,7 +1574,6 @@ function render() {
   $('#topbar-sub').textContent = TAB_SUBTITLES[ui.tab];
 }
 
-$('#logo-heart').setAttribute('points', heartPoints(20, 21, 0.7));
 render();
 
 // 打開時先抓雲端最新資料再決定要不要跳今日提醒；之後每 20 秒、以及從背景切回來時再抓
