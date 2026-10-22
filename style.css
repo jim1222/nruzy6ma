@@ -445,3 +445,15 @@ button, input, select, textarea { font: inherit; color: inherit; }
 
 @keyframes fade { from { opacity: 0; } }
 @keyframes slide-up { from { transform: translateY(40px); opacity: .4; } }
+
+/* ── 修改標記（誰、什麼時候改的；對方勾「已看過」就消失）── */
+.mark { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; font-size: 13px; margin: 0 0 6px 38px; }
+.mark.mine { color: var(--text-light); }
+.list-row { flex-wrap: wrap; }
+.list-row .mark { flex-basis: 100%; margin-bottom: 4px; }
+.log-text .mark, .option-card .mark { margin: 6px 0 0; }
+.card > .mark, .company-picker + .btn-row + .mark { margin-left: 0; }
+.mark-pill { background: var(--pink); border-radius: 10px; padding: 3px 9px; }
+.mark .check { flex: none; min-height: 36px; gap: 6px; }
+.mark .check .box { width: 22px; height: 22px; border-radius: 7px; }
+.mark-dot { color: var(--danger-dark); font-size: 12px; margin-left: 6px; vertical-align: middle; }

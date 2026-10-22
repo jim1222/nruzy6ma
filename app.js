@@ -179,9 +179,10 @@ function loadSync() {
     return {
       key: data.key || '', rev: data.rev || 0, pending: !!data.pending,
       offlineEdits: !!data.offlineEdits, sent: Array.isArray(data.sent) ? data.sent : [],
+      name: data.name || '',
     };
   } catch (e) {
-    return { key: '', rev: 0, pending: false, offlineEdits: false, sent: [] };
+    return { key: '', rev: 0, pending: false, offlineEdits: false, sent: [], name: '' };
   }
 }
 
@@ -441,6 +442,55 @@ function selectedCompany() {
   return company;
 }
 
+// ───────────────────────── 修改標記 ─────────────────────────
+// 改過的項目記下「誰、什麼時候改的」，對方勾「已看過」就刪掉。格式跟電腦版一樣。
+const UNNAMED = '未命名';
+function newMark() {
+  const d = new Date();
+  return { '誰': sync.name || UNNAMED, '時間': `${isoDate(d)} ${pad(d.getHours())}:${pad(d.getMinutes())}` };
+}
+function isMine(mark) { return mark['誰'] === (sync.name || UNNAMED); }
+function markTimeText(mark) {
+  const t = mark['時間'] || '';
+  return t.length >= 16 ? `${t.slice(5, 7)}/${t.slice(8, 10)} ${t.slice(11, 16)}` : t;
+}
+
+// 這間公司底下看得到的標記（客戶進度＋公司與選項），紅點用。月度進度只看本月。
+function companyMarks(company) {
+  const marks = [company['修改標記'], company['月度待辦標記'],
+    ...Object.values(((company['月度進度標記'] || {})[currentMonthKey()]) || {})];
+  ['選項', '截止日期', '催件紀錄'].forEach(key => (company[key] || []).forEach(item => marks.push(item['修改標記'])));
+  return marks.filter(Boolean);
+}
+function hasUnseen(company) { return companyMarks(company).some(m => !isMine(m)); }
+function dotHtml(company) { return hasUnseen(company) ? '<span class="mark-dot" aria-label="有新修改">●</span>' : ''; }
+
+// ref 指到標記放在哪裡，勾「已看過」時用 resolveMarkRef 找回來刪掉
+function markHtml(mark, ref, prefix = '') {
+  if (!mark) return '';
+  const lead = prefix ? `<span>${prefix}</span>` : '';
+  if (isMine(mark)) return `<div class="mark mine">${lead}<span>✏️ 你 ${esc(markTimeText(mark))}・等對方確認</span></div>`;
+  return `
+    <div class="mark">${lead}<span class="mark-pill">✏️ ${esc(mark['誰'])} ${esc(markTimeText(mark))}</span>
+      ${checkHtml({ checked: false, change: 'ack-mark', data: { ref }, label: '已看過' })}
+    </div>`;
+}
+
+function resolveMarkRef(ref) {
+  const [kind, id] = ref.split(':');
+  if (kind === 'todo') return [state.todos.find(t => t.id === id), '修改標記'];
+  if (kind === 'intro') return [state.settings, '開頭本文標記'];
+  const company = selectedCompany();
+  if (!company) return [null, ''];
+  if (kind === 'company') return [company, '修改標記'];
+  if (kind === 'monthly-list') return [company, '月度待辦標記'];
+  if (kind === 'monthly') return [((company['月度進度標記'] || {})[currentMonthKey()]) || null, (company['月度待辦'] || [])[+id]];
+  if (kind === 'option') return [(company['選項'] || [])[+id], '修改標記'];
+  if (kind === 'deadline') return [(company['截止日期'] || []).find(d => d.id === id), '修改標記'];
+  if (kind === 'log') return [(company['催件紀錄'] || []).find(l => l.id === id), '修改標記'];
+  return [null, ''];
+}
+
 // ───────────────────────── 共用元件 ─────────────────────────
 function avatarHtml(company) {
   const name = company['名稱'] || '?';
@@ -455,7 +505,7 @@ function companyPickerHtml() {
   return `
     <button class="company-picker" data-action="open-company-sheet">
       ${avatarHtml(company)}
-      <span class="cp-text"><small>目前的公司（點這裡換）</small><b>${esc(companyLabel(company))}</b></span>
+      <span class="cp-text"><small>目前的公司（點這裡換）</small><b>${esc(companyLabel(company))}${dotHtml(company)}</b></span>
       <span class="chev">▼</span>
     </button>`;
 }
@@ -498,6 +548,7 @@ function renderTodo() {
           label: `<span class="date-tag">${esc(friendlyDate(t['日期']))}${overdue ? '　已逾期' : ''}${t['日期'] === today ? '　今天' : ''}</span>${esc(t['內容'])}`,
         })}
         <button class="btn danger small" data-action="delete-todo" data-id="${esc(t.id)}">刪除</button>
+        ${markHtml(t['修改標記'], `todo:${t.id}`)}
       </div>`;
   }).join('');
   return `
@@ -522,10 +573,11 @@ function renderProgress() {
   const monthKey = currentMonthKey();
   const tasks = company['月度待辦'] || [];
   const progress = (company['月度進度'] || {})[monthKey] || {};
+  const taskMarks = (company['月度進度標記'] || {})[monthKey] || {};
   const taskHtml = tasks.length
-    ? tasks.map((task, i) => checkHtml({
+    ? markHtml(company['月度待辦標記'], 'monthly-list', '項目清單有修改') + tasks.map((task, i) => checkHtml({
         checked: !!progress[task], change: 'toggle-monthly', data: { index: i }, label: esc(task), strike: true,
-      })).join('')
+      }) + markHtml(taskMarks[task], `monthly:${i}`)).join('')
     : '<p class="empty">這間公司還沒有設定月度待辦項目，按右上「管理項目」新增</p>';
 
   const deadlines = [...(company['截止日期'] || [])].sort((a, b) => (a['日期'] || '').localeCompare(b['日期'] || ''));
@@ -545,6 +597,7 @@ function renderProgress() {
               label: `<span class="date-tag">${esc(friendlyDate(d['日期']))}${when}</span>${esc(d['標題'])}`,
             })}
             <button class="btn danger small" data-action="delete-deadline" data-id="${esc(d.id)}">刪除</button>
+            ${markHtml(d['修改標記'], `deadline:${d.id}`)}
           </div>`;
       }).join('')
     : '<p class="empty">目前沒有設定截止日期</p>';
@@ -553,7 +606,7 @@ function renderProgress() {
   const logHtml = logs.length
     ? logs.map(log => `
         <div class="log-row">
-          <div class="log-text"><span class="date-tag">${esc(log['時間'])}</span>${esc(log['內容'])}</div>
+          <div class="log-text"><span class="date-tag">${esc(log['時間'])}</span>${esc(log['內容'])}${markHtml(log['修改標記'], `log:${log.id}`)}</div>
           <button class="btn danger small" data-action="delete-log" data-id="${esc(log.id)}">刪除</button>
         </div>`).join('')
     : '<p class="empty">還沒有催件紀錄</p>';
@@ -702,7 +755,8 @@ function renderManage() {
         <button class="btn" data-action="add-company">＋ 新增公司</button>
         <button class="btn" data-action="edit-company">✏️ 編輯</button>
         <button class="btn danger" data-action="delete-company" data-confirm-text="確定刪除？">刪除</button>
-      </div>`;
+      </div>
+      ${markHtml(company['修改標記'], 'company', '公司資料有修改')}`;
     const options = company['選項'] || [];
     optionSection = `
       <h2 class="section-title pink">💝 ${esc(companyLabel(company))} 的回覆選項</h2>
@@ -711,6 +765,7 @@ function renderManage() {
           <h3>${OPTION_TYPE_ICONS[opt['類型'] || 'fixed'] || '📄'} ${esc(opt['標題'])}</h3>
           <span class="type-tag">${OPTION_TYPE_LABELS[opt['類型'] || 'fixed'] || ''}</span>
           <div class="preview">${esc(optionPreview(opt))}</div>
+          ${markHtml(opt['修改標記'], `option:${i}`)}
           <div class="btn-row">
             <button class="btn small" data-action="edit-option" data-index="${i}">✏️ 編輯</button>
             <button class="btn small danger" data-action="delete-option" data-index="${i}">🗑️ 刪除</button>
@@ -734,6 +789,7 @@ function renderManage() {
       <p class="hint" style="margin:0 0 8px">所有公司共用，問候語在產生文字時選</p>
       <textarea id="intro-input" class="textarea" style="min-height:80px">${esc(state.settings['開頭本文'] || '')}</textarea>
       <button class="btn primary" style="margin-top:8px" data-action="save-intro">儲存開頭本文</button>
+      ${markHtml(state.settings['開頭本文標記'], 'intro')}
     </section>
     <section class="card">
       <h2 class="card-title">☁️ 雲端同步</h2>
@@ -741,6 +797,7 @@ function renderManage() {
       <div class="btn-row" style="flex-direction:column">
         <button class="btn primary" data-action="sync-now">🔄 立即同步</button>
         <button class="btn" data-action="export">📤 匯出資料（備份）</button>
+        <button class="btn" data-action="change-name">👤 更改我的名字（目前：${esc(sync.name || UNNAMED)}）</button>
         <button class="btn ghost" data-action="change-key">🔑 重新輸入連線碼</button>
       </div>
     </section>`;
@@ -785,7 +842,7 @@ function openCompanySheet() {
     .map(c => `
       <button class="company-option${c.id === ui.companyId ? ' selected' : ''}" data-pick-company="${esc(c.id)}">
         ${avatarHtml(c)}
-        <span><b>${esc(c['名稱'])}</b><span class="co-sub">${esc(c['編號'] || '')}${c['取件地址'] ? '　' + esc(c['取件地址']) : ''}</span></span>
+        <span><b>${esc(c['名稱'])}${dotHtml(c)}</b><span class="co-sub">${esc(c['編號'] || '')}${c['取件地址'] ? '　' + esc(c['取件地址']) : ''}</span></span>
       </button>`).join('') || '<p class="empty">找不到符合的公司</p>';
 
   openSheet({
@@ -831,9 +888,9 @@ function openCompanyForm(existing) {
         const address = $('#f-addr').value.trim();
         if (!name) { toast('請輸入公司名稱'); return false; }
         if (existing) {
-          Object.assign(existing, { '編號': code, '名稱': name, '取件地址': address });
+          Object.assign(existing, { '編號': code, '名稱': name, '取件地址': address, '修改標記': newMark() });
         } else {
-          const company = { id: uid(), '編號': code, '名稱': name, '取件地址': address, '選項': [] };
+          const company = { id: uid(), '編號': code, '名稱': name, '取件地址': address, '選項': [], '修改標記': newMark() };
           state.companies.push(company);
           ui.companyId = company.id;
           ui.genIndex = null;
@@ -899,6 +956,7 @@ function openOptionForm(company, type, index) {
     <label class="field-label" for="f-title">選項標題</label>
     <input id="f-title" class="input" value="${esc(existing?.['標題'] || '')}" placeholder="例如：營業稅補件">`;
   const commit = option => {
+    option['修改標記'] = newMark();
     if (existing) company['選項'][index] = option;
     else (company['選項'] = company['選項'] || []).push(option);
     save();
@@ -975,6 +1033,7 @@ function openMonthlyTasksForm(company) {
     onMount(overlay) {
       bindItemEditor(overlay, items);
       bindFormButtons(overlay, () => {
+        if (stableStringify(items) !== stableStringify(company['月度待辦'] || [])) company['月度待辦標記'] = newMark();
         company['月度待辦'] = items;
         save();
         render();
@@ -1006,7 +1065,8 @@ function openReminderSheet(items) {
 
 function maybeShowReminder() {
   const today = todayIso();
-  if (state.reminderShownDate === today) return;
+  // 還在輸入連線碼／名字的畫面時先不跳，設定好之後再跳
+  if (state.reminderShownDate === today || !sync.key || !sync.name) return;
   const items = collectReminderItems();
   if (items.todos.length || items.deadlines.length || items.monthly.length) openReminderSheet(items);
   state.reminderShownDate = today;
@@ -1054,7 +1114,7 @@ const actions = {
     const content = input.value.trim();
     if (!content) { toast('請輸入待辦內容'); input.focus(); return; }
     input.value = '';
-    state.todos.push({ id: uid(), '日期': pickedIso('todo'), '內容': content, '完成': false });
+    state.todos.push({ id: uid(), '日期': pickedIso('todo'), '內容': content, '完成': false, '修改標記': newMark() });
     save();
     render();
     toast('已新增 ✨');
@@ -1074,7 +1134,7 @@ const actions = {
     if (!title) { toast('請輸入截止日期的標題'); input.focus(); return; }
     const company = selectedCompany();
     input.value = '';
-    (company['截止日期'] = company['截止日期'] || []).push({ id: uid(), '標題': title, '日期': pickedIso('deadline'), '完成': false });
+    (company['截止日期'] = company['截止日期'] || []).push({ id: uid(), '標題': title, '日期': pickedIso('deadline'), '完成': false, '修改標記': newMark() });
     save();
     render();
   },
@@ -1094,7 +1154,7 @@ const actions = {
     const d = new Date();
     const time = `${isoDate(d)} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
     input.value = '';
-    (company['催件紀錄'] = company['催件紀錄'] || []).unshift({ id: uid(), '時間': time, '內容': content });
+    (company['催件紀錄'] = company['催件紀錄'] || []).unshift({ id: uid(), '時間': time, '內容': content, '修改標記': newMark() });
     save();
     render();
   },
@@ -1150,8 +1210,11 @@ const actions = {
     });
   },
   'save-intro'() {
-    state.settings['開頭本文'] = $('#intro-input').value;
+    const text = $('#intro-input').value;
+    if (text !== (state.settings['開頭本文'] || '')) state.settings['開頭本文標記'] = newMark();
+    state.settings['開頭本文'] = text;
     save();
+    render();
     toast('已儲存好囉～✨');
   },
   export: exportData,
@@ -1168,18 +1231,35 @@ const actions = {
   },
   'cancel-setup'() {
     ui.setup = false;
+    ui.nameSetup = false;
     render();
+  },
+  'change-name'() {
+    ui.nameSetup = true;
+    render();
+  },
+  'save-name'() {
+    const name = readNameInput();
+    if (!name) return;
+    sync.name = name;
+    ui.nameSetup = false;
+    saveLocal();
+    render();
+    toast(`嗨 ${name} 💕`);
+    maybeShowReminder();
   },
   async 'connect'() {
     const el = $('[data-action=connect]');
     const input = $('#key-input');
     const key = input.value.trim();
     if (!key) { toast('請貼上連線碼'); return; }
+    const name = readNameInput();
+    if (!name) return;
     el.disabled = true;
     el.textContent = '連線中…';
     try {
       const result = await cloudRequest(undefined, key);
-      sync = { key, rev: 0, pending: false, offlineEdits: false, sent: [] };
+      sync = { key, rev: 0, pending: false, offlineEdits: false, sent: [], name };
       ui.setup = false;
       if (result.data) applyRemote(result);
       else { saveLocal(); render(); }
@@ -1210,7 +1290,7 @@ const changes = {
   },
   'toggle-todo'(el) {
     const todo = state.todos.find(t => t.id === el.dataset.id);
-    if (todo) todo['完成'] = el.checked;
+    if (todo) Object.assign(todo, { '完成': el.checked, '修改標記': newMark() });
     save();
     render();
   },
@@ -1221,12 +1301,22 @@ const changes = {
     company['月度進度'] = company['月度進度'] || {};
     company['月度進度'][monthKey] = company['月度進度'][monthKey] || {};
     company['月度進度'][monthKey][task] = el.checked;
+    company['月度進度標記'] = company['月度進度標記'] || {};
+    company['月度進度標記'][monthKey] = company['月度進度標記'][monthKey] || {};
+    company['月度進度標記'][monthKey][task] = newMark();
     save();
+    render();
   },
   'toggle-deadline'(el) {
     const company = selectedCompany();
     const deadline = (company['截止日期'] || []).find(d => d.id === el.dataset.id);
-    if (deadline) deadline['完成'] = el.checked;
+    if (deadline) Object.assign(deadline, { '完成': el.checked, '修改標記': newMark() });
+    save();
+    render();
+  },
+  'ack-mark'(el) {
+    const [holder, key] = resolveMarkRef(el.dataset.ref);
+    if (holder && key) delete holder[key];
     save();
     render();
   },
@@ -1277,13 +1367,37 @@ const TAB_SUBTITLES = {
   manage: '公司與回覆選項 ⚙️',
 };
 
+function readNameInput() {
+  const input = $('#name-input');
+  const name = input.value.trim().slice(0, 12);
+  if (!name) { toast('請輸入你的名字'); input.focus(); }
+  return name;
+}
+
+function nameFieldHtml(enter) {
+  return `
+      <label class="field-label" for="name-input">你的名字</label>
+      <input id="name-input" class="input" placeholder="例如：小美" value="${esc(sync.name)}" maxlength="12" data-enter="${enter}">
+      <p class="hint" style="margin:6px 0 0">改東西時會標記是誰改的，讓對方知道。你的手機和電腦用同一個名字就好</p>`;
+}
+
 function renderSetup() {
+  if (sync.key && !ui.setup) {
+    return `
+    <section class="card">
+      <h2 class="card-title">👤 設定你的名字</h2>
+      ${nameFieldHtml('save-name')}
+      <button class="btn primary block" style="margin-top:12px" data-action="save-name">儲存</button>
+      ${sync.name ? '<button class="btn ghost block" style="margin-top:8px" data-action="cancel-setup">取消</button>' : ''}
+    </section>`;
+  }
   return `
     <section class="card">
       <h2 class="card-title">🔑 第一次使用</h2>
       <p style="margin:0 0 12px">請貼上連線碼，手機就會跟電腦版的資料連在一起。連線碼只要輸入一次，之後會記在這支手機裡。</p>
-      <input id="key-input" class="input" placeholder="貼上連線碼" autocomplete="off" autocapitalize="off" spellcheck="false" data-enter="connect">
-      <button class="btn primary block" style="margin-top:10px" data-action="connect">連線</button>
+      <input id="key-input" class="input" placeholder="貼上連線碼" autocomplete="off" autocapitalize="off" spellcheck="false">
+      ${nameFieldHtml('connect')}
+      <button class="btn primary block" style="margin-top:12px" data-action="connect">連線</button>
       ${sync.key ? '<button class="btn ghost block" style="margin-top:8px" data-action="cancel-setup">取消</button>' : ''}
     </section>`;
 }
@@ -1296,7 +1410,7 @@ function render() {
   view.querySelectorAll('input.input[id]').forEach(el => { drafts[el.id] = el.value; });
   const focusedId = document.activeElement && view.contains(document.activeElement) ? document.activeElement.id : '';
   if (focusedId === 'intro-input') drafts[focusedId] = document.activeElement.value;
-  const setup = !sync.key || ui.setup;
+  const setup = !sync.key || ui.setup || ui.nameSetup || !sync.name;
   view.innerHTML = setup ? renderSetup() : renderers[ui.tab]();
   document.querySelector('.tabbar').hidden = setup;
   Object.entries(drafts).forEach(([id, value]) => {
