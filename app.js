@@ -588,6 +588,39 @@ function isUrgent(dateText, done, isDeadline) {
   return isDeadline ? left <= DEADLINE_WARNING_DAYS : left < 0;
 }
 
+// 過去的日子蓋貓咪印章（集點卡的感覺）。圖案跟電腦版 make_cat_stamp 一樣，座標 100x100；
+// 眼睛鼻子嘴巴用 mask 挖空，像印章鏤空的地方
+const STAMP_ANGLES = [-14, -6, 5, 13];
+const CAT_STAMP_DEFS = `
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <defs>
+      <mask id="cat-face-cut">
+        <rect width="100" height="100" fill="#fff"/>
+        <g fill="none" stroke="#000" stroke-linecap="round">
+          <path d="M37 52 Q41 46 45 52 M55 52 Q59 46 63 52" stroke-width="3"/>
+          <path d="M44.5 60 Q47 63.5 50 60 Q53 63.5 55.5 60" stroke-width="2"/>
+        </g>
+        <path d="M47 57 L53 57 L50 60.5 Z" fill="#000"/>
+      </mask>
+    </defs>
+  </svg>`;
+function catStampHtml(iso) {
+  const day = Math.round(parseIso(iso).getTime() / 86400000);
+  const angle = STAMP_ANGLES[((day % 4) + 4) % 4];
+  return `
+    <svg class="stamp" viewBox="0 0 100 100" aria-hidden="true">
+      <g transform="rotate(${angle} 50 50)" fill="currentColor" stroke="currentColor">
+        <circle cx="50" cy="50" r="41" fill="none" stroke-width="6"/>
+        <circle cx="50" cy="50" r="36.2" fill="none" stroke-width="1.6"/>
+        <g mask="url(#cat-face-cut)" stroke="none">
+          <path d="M28 44 L31 20 L46 33 Z M72 44 L69 20 L54 33 Z"/>
+          <ellipse cx="50" cy="52" rx="26" ry="21"/>
+        </g>
+        <path d="M24 56 L13 53 M24 61 L13 63 M76 56 L87 53 M76 61 L87 63" fill="none" stroke-width="1.8" stroke-linecap="round"/>
+      </g>
+    </svg>`;
+}
+
 function renderCalendar() {
   const { y, m, day } = ui.cal;
   const items = calendarItemsByDate();
@@ -602,7 +635,8 @@ function renderCalendar() {
     ];
     const dots = entries.slice(0, 4).map(e => `<i class="dot ${e.done ? 'done' : e.urgent ? 'urgent' : e.kind}"></i>`).join('');
     const cls = [d.getMonth() + 1 !== m && 'other', iso === today && 'today', iso === day && 'selected'].filter(Boolean).join(' ');
-    return `<button class="cal-cell ${cls}" data-action="cal-pick" data-date="${iso}"><span>${d.getDate()}</span><span class="dots">${dots}</span></button>`;
+    const stamp = iso < today ? catStampHtml(iso) : '';
+    return `<button class="cal-cell ${cls}" data-action="cal-pick" data-date="${iso}">${stamp}<span>${d.getDate()}</span><span class="dots">${dots}</span></button>`;
   }).join('');
 
   const dayItems = items[day] || { todos: [], deadlines: [], logs: [] };
@@ -626,6 +660,7 @@ function renderCalendar() {
 
   return `
     <section class="card cal-card">
+      ${CAT_STAMP_DEFS}
       <div class="cal-nav">
         <button class="btn small" data-action="cal-shift" data-delta="-1" aria-label="上個月">◀</button>
         <b>${y} 年 ${m} 月</b>
@@ -636,7 +671,7 @@ function renderCalendar() {
         ${['日', '一', '二', '三', '四', '五', '六'].map((w, i) => `<span class="cal-week${i === 0 || i === 6 ? ' weekend' : ''}">${w}</span>`).join('')}
         ${cells}
       </div>
-      <p class="cal-legend"><i class="dot todo"></i>待辦　<i class="dot deadline"></i>截止日期　<i class="dot urgent"></i>逾期／快到期　<i class="dot done"></i>已完成</p>
+      <p class="cal-legend"><span><i class="dot todo"></i>待辦</span><span><i class="dot deadline"></i>截止日期</span><span><i class="dot urgent"></i>逾期／快到期</span><span><i class="dot done"></i>已完成</span><span>🐱 印章＝已經過完的日子</span></p>
     </section>
     <section class="card">
       <h2 class="card-title">📌 ${esc(friendlyDate(day))}${day === today ? '　今天' : ''}</h2>

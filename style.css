@@ -494,3 +494,12 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .cal-legend { font-size: 12px; color: var(--text-light); margin: 10px 4px 0; display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
 .cal-legend .dot { margin-left: 6px; }
 .cal-sub { font-size: 15px; color: var(--blue-dark); margin: 12px 2px 6px; }
+
+/* 過去的日子蓋貓咪印章：淡淡地壓在格子上，數字和點點疊在印章上面 */
+.cal-cell { position: relative; overflow: hidden; }
+.cal-cell > span { position: relative; z-index: 1; }
+.cal-cell .stamp { position: absolute; inset: 6%; width: 88%; height: 88%; color: #FF7A9A; opacity: .42; pointer-events: none; }
+.cal-legend { gap: 4px 12px; }
+.cal-legend span { white-space: nowrap; display: inline-flex; align-items: center; gap: 4px; }
+.cal-legend .dot { margin-left: 0; }
+.cal-cell > span:first-of-type { text-shadow: 0 0 3px #fff, 0 0 3px #fff, 0 0 2px #fff; }
