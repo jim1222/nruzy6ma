@@ -554,3 +554,33 @@ body {
 .support-id { color: var(--blue-text); font-weight: bold; font-size: 17px; }
 .support a.btn { text-decoration: none; display: flex; align-items: center; justify-content: center; margin-top: 12px; }
 .support-qr { width: 180px; height: 180px; display: block; margin: 16px auto 6px; image-rendering: pixelated; }
+
+/* ── 總覽 ── */
+.tabbar button { min-width: 0; }
+.tabbar button span:last-child { white-space: nowrap; font-size: 11px; }
+.ov-sums { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-bottom: 12px; }
+.ov-sum { border: 2px solid var(--panel-border); background: var(--panel); border-radius: 16px; padding: 10px 8px; text-align: left; font: inherit; color: var(--text); display: flex; flex-direction: column; gap: 4px; cursor: pointer; }
+.ov-sum.on { border-color: var(--pink-dark); }
+.ov-sum-title { font-size: 12px; color: var(--blue-text); font-weight: bold; }
+.ov-sum-value { font-size: 14px; font-weight: bold; line-height: 1.35; }
+.ov-sum.danger .ov-sum-value { color: var(--danger-dark); }
+.ov-sum.stale .ov-sum-value { color: #E5668E; }
+.ov-tools { margin-bottom: 12px; }
+.ov-filters { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.ov-days { font-size: 14px; color: var(--text); display: flex; align-items: center; gap: 6px; }
+.ov-days select { font: inherit; padding: 4px 8px; border-radius: 10px; border: 2px solid var(--blue-dark); background: #fff; color: var(--text); }
+.ov-card { display: block; width: 100%; text-align: left; font: inherit; color: var(--text); cursor: pointer; border: 2px solid var(--panel-border); }
+.ov-card.urgent { border-color: var(--danger); }
+.ov-head { display: flex; align-items: center; gap: 4px; margin-bottom: 6px; font-size: 16px; }
+.ov-go { margin-left: auto; font-size: 12px; color: var(--text-light); }
+.ov-line { font-size: 14px; line-height: 1.6; margin: 2px 0; }
+.ov-month { display: flex; align-items: center; gap: 8px; }
+.ov-bar { flex: 1; height: 10px; background: var(--blue); border-radius: 5px; overflow: hidden; }
+.ov-bar span { display: block; height: 100%; background: var(--blue-dark); border-radius: 5px; }
+.ov-bar span.full { background: var(--success); }
+.ov-ok { color: var(--success); font-weight: bold; }
+.ov-muted { color: var(--text-light); }
+.ov-stale { color: #E5668E; }
+.ov-filters { flex-wrap: nowrap; overflow-x: auto; }
+.ov-filters .chip { padding: 6px 12px; font-size: 14px; white-space: nowrap; flex: none; }
+.ov-sum-value { font-size: 13px; }

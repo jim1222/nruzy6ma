@@ -563,6 +563,119 @@ function checkHtml({ checked, change, data = {}, label, strike = false }) {
 }
 
 // ───────────────────────── 每日待辦 ─────────────────────────
+// ───────────────────────── 總覽 ─────────────────────────
+// 所有公司一次看。規則跟電腦版 company_overview／overview_rows 一樣，改的時候兩邊一起改
+const NO_CONTACT_DAY_CHOICES = [3, 7, 10, 14, 21, 30, 60];
+const DEFAULT_NO_CONTACT_DAYS = 14;
+const OVERVIEW_FILTERS = ['全部', '本月還沒做完', '快到期', '很久沒聯絡'];
+
+function noContactDays() {
+  const days = parseInt(state.settings['沒聯絡提醒天數'], 10);
+  return days > 0 ? days : DEFAULT_NO_CONTACT_DAYS;
+}
+
+function companyOverview(company, noContact = noContactDays()) {
+  const tasks = company['月度待辦'] || [];
+  const progress = (company['月度進度'] || {})[currentMonthKey()] || {};
+  const done = tasks.filter(t => progress[t]).length;
+  const upcoming = (company['截止日期'] || [])
+    .filter(d => !d['完成'] && parseIso(d['日期']))
+    .map(d => ({ d, left: daysFromToday(parseIso(d['日期'])) }))
+    .sort((a, b) => a.left - b.left);
+  const urgentCount = upcoming.filter(u => u.left <= DEADLINE_WARNING_DAYS).length;
+  const sinces = (company['催件紀錄'] || [])
+    .map(log => parseIso((log['時間'] || '').slice(0, 10)))
+    .filter(Boolean)
+    .map(d => -daysFromToday(d));
+  const since = sinces.length ? Math.min(...sinces) : null;
+  return {
+    company, done, total: tasks.length,
+    next: upcoming[0]?.d || null, left: upcoming.length ? upcoming[0].left : null, urgentCount,
+    since,
+    urgent: urgentCount > 0,
+    stale: since !== null && since > noContact,
+    undone: tasks.length > 0 && done < tasks.length,
+  };
+}
+
+function overviewRows(noContact = noContactDays()) {
+  const group = r => r.urgent ? 0 : r.stale ? 1 : r.undone ? 2 : 3;
+  return state.companies.map(c => companyOverview(c, noContact)).sort((a, b) =>
+    group(a) - group(b)
+    || (a.left ?? 1e6) - (b.left ?? 1e6)
+    || (b.since || 0) - (a.since || 0)
+    || companyLabel(a.company).localeCompare(companyLabel(b.company)));
+}
+
+// 2026-10-25 → 10/25（不是今年的加上年份），跟電腦版 short_date 一樣
+function shortDate(text) {
+  const d = parseIso(text);
+  if (!d) return text || '';
+  const md = `${d.getMonth() + 1}/${d.getDate()}`;
+  return d.getFullYear() === new Date().getFullYear() ? md : `${d.getFullYear()}/${md}`;
+}
+
+function deadlineLeftText(left) {
+  return left < 0 ? `已逾期 ${-left} 天` : left === 0 ? '今天到期' : `${left} 天後`;
+}
+
+function renderOverview() {
+  const days = noContactDays();
+  const rows = overviewRows(days);
+  const withTasks = rows.filter(r => r.total);
+  const allDone = withTasks.filter(r => r.done === r.total).length;
+  const urgent = rows.reduce((n, r) => n + r.urgentCount, 0);
+  const stale = rows.filter(r => r.stale).length;
+  const filter = ui.overviewFilter || '全部';
+  const key = { '本月還沒做完': 'undone', '快到期': 'urgent', '很久沒聯絡': 'stale' }[filter];
+  const shown = key ? rows.filter(r => r[key]) : rows;
+
+  const summary = (f, title, value, cls) => `
+    <button class="ov-sum ${cls}${filter === f ? ' on' : ''}" data-action="overview-filter" data-filter="${f}">
+      <span class="ov-sum-title">${title}</span><span class="ov-sum-value">${value}</span>
+    </button>`;
+  const cards = shown.map(r => {
+    const c = r.company;
+    const pct = r.total ? Math.round(r.done / r.total * 100) : 0;
+    const full = r.total && r.done === r.total;
+    const month = r.total
+      ? `<div class="ov-bar"><span style="width:${pct}%" class="${full ? 'full' : ''}"></span></div>
+         <span class="${full ? 'ov-ok' : ''}">${full ? '✓ 本月完成' : `${r.done}／${r.total} 項`}</span>`
+      : '<span class="ov-muted">未設定項目</span>';
+    const extra = r.urgentCount > 1 ? `（另外還有 ${r.urgentCount - 1} 件快到期）` : '';
+    const deadline = r.next
+      ? `<div class="ov-line${r.urgent ? ' danger-text' : ''}">⏰ ${esc(r.next['標題'])}・${esc(shortDate(r.next['日期']))}（${deadlineLeftText(r.left)}）${extra}</div>`
+      : '';
+    const contact = r.since === null ? '<div class="ov-line ov-muted">💬 還沒有聯絡紀錄</div>'
+      : r.stale ? `<div class="ov-line ov-stale">💬 已 ${r.since} 天沒聯絡</div>`
+      : `<div class="ov-line">💬 最後聯絡：${r.since === 0 ? '今天' : `${r.since} 天前`}</div>`;
+    return `
+      <button class="card ov-card${r.urgent ? ' urgent' : ''}" data-action="overview-open" data-id="${esc(c.id)}">
+        <div class="ov-head"><b>${esc(companyLabel(c))}</b>${dotHtml(c)}<span class="ov-go">看進度 ›</span></div>
+        <div class="ov-line ov-month">📋 本月 ${month}</div>
+        ${deadline}
+        ${contact}
+      </button>`;
+  }).join('');
+  const empty = !state.companies.length ? '還沒有公司，到「管理」新增吧' : '這一類目前沒有公司，太棒了～';
+
+  return `
+    <div class="ov-sums">
+      ${summary('本月還沒做完', '📋 本月待辦', withTasks.length ? `已完成 ${allDone}／${withTasks.length} 家` : '還沒設定項目', '')}
+      ${summary('快到期', '⏰ 截止日期', urgent ? `${urgent} 件逾期或 ${DEADLINE_WARNING_DAYS} 天內到期` : '最近沒有要到期的 👍', urgent ? 'danger' : '')}
+      ${summary('很久沒聯絡', '💬 很久沒聯絡', stale ? `${stale} 家超過 ${days} 天` : '都有聯絡 👍', stale ? 'stale' : '')}
+    </div>
+    <div class="ov-tools">
+      <div class="ov-filters">${OVERVIEW_FILTERS.map(f =>
+        `<button class="chip${f === filter ? ' selected' : ''}" data-action="overview-filter" data-filter="${f}">${f}</button>`).join('')}</div>
+      <label class="ov-days">超過
+        <select data-change="no-contact-days">${NO_CONTACT_DAY_CHOICES.map(d =>
+          `<option value="${d}"${d === days ? ' selected' : ''}>${d}</option>`).join('')}</select>
+        天沒聯絡就提醒</label>
+    </div>
+    ${shown.length ? cards : emptyArtHtml(empty)}`;
+}
+
 function renderTodo() {
   const today = todayIso();
   const todos = [...state.todos].sort((a, b) => (a['日期'] || '').localeCompare(b['日期'] || ''));
@@ -1286,6 +1399,16 @@ const actions = {
   },
 
   'manage-monthly'() { openMonthlyTasksForm(selectedCompany()); },
+  'overview-filter'(el) {
+    ui.overviewFilter = el.dataset.filter;
+    render();
+  },
+  'overview-open'(el) {
+    ui.companyId = el.dataset.id;
+    ui.tab = 'progress';
+    render();
+    window.scrollTo(0, 0);
+  },
   'add-deadline'() {
     const input = $('#deadline-input');
     const title = input.value.trim();
@@ -1553,6 +1676,12 @@ document.addEventListener('click', e => {
   if (el && actions[el.dataset.action]) actions[el.dataset.action](el, e);
 });
 
+changes['no-contact-days'] = el => {
+  state.settings['沒聯絡提醒天數'] = parseInt(el.value, 10);
+  save();
+  render();
+};
+
 document.addEventListener('change', e => {
   const el = e.target.closest('[data-change]');
   if (el && changes[el.dataset.change]) changes[el.dataset.change](el, e);
@@ -1572,6 +1701,7 @@ document.addEventListener('keydown', e => {
 
 // ───────────────────────── 繪製 ─────────────────────────
 const TAB_SUBTITLES = {
+  overview: '所有公司一次看 🏠',
   todo: '今天也辛苦了～焙子陪你 🐹',
   calendar: '這個月有什麼事 📆',
   progress: '看看每間公司的進度 📊',
@@ -1655,6 +1785,11 @@ const FONT_NOTICE = '本程式使用的字型「jf open 粉圓」由 justfont �
 const SUPPORT_NAME = '喨喨';
 const SUPPORT_LINE_ID = 'jim911222';   // 改了的話，電腦版資料夾 art/make_baozi_art.py 的 QR Code 也要重做
 const TUTORIAL_SECTIONS = [
+  ['🏠', '總覽', [
+    '一次看所有公司：本月待辦做到哪、最近的截止日期、多久沒聯絡',
+    '上面三格是摘要，點一下就只顯示那一類的公司，也可以用下面的篩選按鈕',
+    '點公司卡片，會直接跳到那間公司的「客戶進度」',
+  ], ['最急的排最前面：逾期或快到期 → 很久沒聯絡 → 本月還沒做完', '「超過幾天沒聯絡就提醒」可以自己選，手機和電腦會用同一個設定']],
   ['📅', '每日待辦', [
     '選日期、輸入要做的事，按「新增」（電腦可以直接按 Enter）',
     '做完就勾選，會劃掉；過了日期還沒做的會變成紅色',
@@ -1809,7 +1944,7 @@ function renderSetup() {
 
 function render() {
   const view = $('#view');
-  const renderers = { todo: renderTodo, calendar: renderCalendar, progress: renderProgress, generate: renderGenerate, manage: renderManage };
+  const renderers = { overview: renderOverview, todo: renderTodo, calendar: renderCalendar, progress: renderProgress, generate: renderGenerate, manage: renderManage };
   // 整頁重畫時保留還沒送出的輸入框內容和游標所在的欄位（例如打到一半，雲端剛好同步進來）
   const drafts = {};
   view.querySelectorAll('input.input[id]').forEach(el => { drafts[el.id] = el.value; });
