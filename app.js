@@ -426,6 +426,7 @@ const ui = {
     deadline: { m: now.getMonth() + 1, d: now.getDate() },
     pickup: { m: now.getMonth() + 1, d: now.getDate() },
   },
+  cal: { y: now.getFullYear(), m: now.getMonth() + 1, day: isoDate(now) },
 };
 
 function pickedIso(key) {
@@ -477,10 +478,10 @@ function markHtml(mark, ref, prefix = '') {
 }
 
 function resolveMarkRef(ref) {
-  const [kind, id] = ref.split(':');
+  const [kind, id, companyId] = ref.split(':');
   if (kind === 'todo') return [state.todos.find(t => t.id === id), '修改標記'];
   if (kind === 'intro') return [state.settings, '開頭本文標記'];
-  const company = selectedCompany();
+  const company = companyId ? findCompany(companyId) : selectedCompany();
   if (!company) return [null, ''];
   if (kind === 'company') return [company, '修改標記'];
   if (kind === 'monthly-list') return [company, '月度待辦標記'];
@@ -564,6 +565,92 @@ function renderTodo() {
     </section>
     <h2 class="section-title">📋 待辦清單</h2>
     ${rows || '<p class="empty">目前沒有待辦事項～</p>'}`;
+}
+
+// ───────────────────────── 行事曆 ─────────────────────────
+// 不另外存資料：把每日待辦、各公司截止日期、催件紀錄排到月曆上看（跟電腦版一樣）
+function calendarItemsByDate() {
+  const days = {};
+  const slot = key => (days[key] = days[key] || { todos: [], deadlines: [], logs: [] });
+  state.todos.forEach(t => { if (t['日期']) slot(t['日期']).todos.push(t); });
+  state.companies.forEach(c => {
+    (c['截止日期'] || []).forEach(d => { if (d['日期']) slot(d['日期']).deadlines.push({ company: c, d }); });
+    (c['催件紀錄'] || []).forEach(log => { if (log['時間']) slot(log['時間'].slice(0, 10)).logs.push({ company: c, log }); });
+  });
+  return days;
+}
+
+// 沒完成的才標紅：待辦過了日期才紅，截止日期 3 天內到期就紅（跟待辦頁、進度頁一樣）
+function isUrgent(dateText, done, isDeadline) {
+  const due = parseIso(dateText);
+  if (done || !due) return false;
+  const left = daysFromToday(due);
+  return isDeadline ? left <= DEADLINE_WARNING_DAYS : left < 0;
+}
+
+function renderCalendar() {
+  const { y, m, day } = ui.cal;
+  const items = calendarItemsByDate();
+  const today = todayIso();
+  const first = new Date(y, m - 1, 1);
+  const cells = Array.from({ length: 42 }, (_, i) => new Date(y, m - 1, 1 - first.getDay() + i)).map(d => {
+    const iso = isoDate(d);
+    const dayItems = items[iso] || { todos: [], deadlines: [] };
+    const entries = [
+      ...dayItems.todos.map(t => ({ done: t['完成'], urgent: isUrgent(iso, t['完成'], false), kind: 'todo' })),
+      ...dayItems.deadlines.map(({ d: dl }) => ({ done: dl['完成'], urgent: isUrgent(iso, dl['完成'], true), kind: 'deadline' })),
+    ];
+    const dots = entries.slice(0, 4).map(e => `<i class="dot ${e.done ? 'done' : e.urgent ? 'urgent' : e.kind}"></i>`).join('');
+    const cls = [d.getMonth() + 1 !== m && 'other', iso === today && 'today', iso === day && 'selected'].filter(Boolean).join(' ');
+    return `<button class="cal-cell ${cls}" data-action="cal-pick" data-date="${iso}"><span>${d.getDate()}</span><span class="dots">${dots}</span></button>`;
+  }).join('');
+
+  const dayItems = items[day] || { todos: [], deadlines: [], logs: [] };
+  const todoHtml = dayItems.todos.map(t => `
+      <div class="list-row${isUrgent(day, t['完成'], false) ? ' danger-text' : ''}">
+        ${checkHtml({ checked: t['完成'], change: 'toggle-todo', data: { id: t.id }, label: esc(t['內容']), strike: true })}
+        <button class="btn danger small" data-action="delete-todo" data-id="${esc(t.id)}">刪除</button>
+        ${markHtml(t['修改標記'], `todo:${t.id}`)}
+      </div>`).join('');
+  const deadlineHtml = dayItems.deadlines.map(({ company, d }) => `
+      <div class="list-row${isUrgent(day, d['完成'], true) ? ' danger-text' : ''}">
+        ${checkHtml({
+          checked: d['完成'], change: 'toggle-deadline', data: { id: d.id, company: company.id }, strike: true,
+          label: `<span class="date-tag">${esc(companyLabel(company))}</span>${esc(d['標題'])}`,
+        })}
+        ${markHtml(d['修改標記'], `deadline:${d.id}:${company.id}`)}
+      </div>`).join('');
+  const logHtml = dayItems.logs.map(({ company, log }) => `
+      <div class="log-row"><div class="log-text"><span class="date-tag">${esc(log['時間'].slice(11, 16))}　${esc(companyLabel(company))}</span>${esc(log['內容'])}</div></div>`).join('');
+  const empty = !todoHtml && !deadlineHtml && !logHtml;
+
+  return `
+    <section class="card cal-card">
+      <div class="cal-nav">
+        <button class="btn small" data-action="cal-shift" data-delta="-1" aria-label="上個月">◀</button>
+        <b>${y} 年 ${m} 月</b>
+        <button class="btn small" data-action="cal-shift" data-delta="1" aria-label="下個月">▶</button>
+        <button class="btn small ghost" data-action="cal-today">今天</button>
+      </div>
+      <div class="cal-grid">
+        ${['日', '一', '二', '三', '四', '五', '六'].map((w, i) => `<span class="cal-week${i === 0 || i === 6 ? ' weekend' : ''}">${w}</span>`).join('')}
+        ${cells}
+      </div>
+      <p class="cal-legend"><i class="dot todo"></i>待辦　<i class="dot deadline"></i>截止日期　<i class="dot urgent"></i>逾期／快到期　<i class="dot done"></i>已完成</p>
+    </section>
+    <section class="card">
+      <h2 class="card-title">📌 ${esc(friendlyDate(day))}${day === today ? '　今天' : ''}</h2>
+      <div class="input-row">
+        <input id="cal-input" class="input" placeholder="在這天新增待辦" enterkeyhint="done" data-enter="add-cal-todo">
+        <button class="btn primary" data-action="add-cal-todo">新增</button>
+      </div>
+      <div style="margin-top:12px">
+        ${empty ? '<p class="empty">這天沒有安排～</p>' : ''}
+        ${todoHtml ? `<h3 class="cal-sub">📅 待辦</h3>${todoHtml}` : ''}
+        ${deadlineHtml ? `<h3 class="cal-sub">⏰ 截止日期</h3>${deadlineHtml}` : ''}
+        ${logHtml ? `<h3 class="cal-sub">💬 這天的催件紀錄</h3>${logHtml}` : ''}
+      </div>
+    </section>`;
 }
 
 // ───────────────────────── 客戶進度 ─────────────────────────
@@ -1127,6 +1214,33 @@ const actions = {
     });
   },
 
+  'cal-shift'(el) {
+    const index = ui.cal.y * 12 + ui.cal.m - 1 + +el.dataset.delta;
+    ui.cal.y = Math.floor(index / 12);
+    ui.cal.m = index % 12 + 1;
+    render();
+  },
+  'cal-today'() {
+    const d = new Date();
+    ui.cal = { y: d.getFullYear(), m: d.getMonth() + 1, day: isoDate(d) };
+    render();
+  },
+  'cal-pick'(el) {
+    const d = parseIso(el.dataset.date);
+    ui.cal = { y: d.getFullYear(), m: d.getMonth() + 1, day: el.dataset.date };
+    render();
+  },
+  'add-cal-todo'() {
+    const input = $('#cal-input');
+    const content = input.value.trim();
+    if (!content) { toast('請輸入待辦內容'); input.focus(); return; }
+    input.value = '';
+    state.todos.push({ id: uid(), '日期': ui.cal.day, '內容': content, '完成': false, '修改標記': newMark() });
+    save();
+    render();
+    toast('已新增 ✨');
+  },
+
   'manage-monthly'() { openMonthlyTasksForm(selectedCompany()); },
   'add-deadline'() {
     const input = $('#deadline-input');
@@ -1308,7 +1422,7 @@ const changes = {
     render();
   },
   'toggle-deadline'(el) {
-    const company = selectedCompany();
+    const company = el.dataset.company ? findCompany(el.dataset.company) : selectedCompany();
     const deadline = (company['截止日期'] || []).find(d => d.id === el.dataset.id);
     if (deadline) Object.assign(deadline, { '完成': el.checked, '修改標記': newMark() });
     save();
@@ -1362,6 +1476,7 @@ document.addEventListener('keydown', e => {
 // ───────────────────────── 繪製 ─────────────────────────
 const TAB_SUBTITLES = {
   todo: '今天也辛苦了 ⭐',
+  calendar: '這個月有什麼事 📆',
   progress: '看看每間公司的進度 📊',
   generate: '挑一間公司開始吧 💌',
   manage: '公司與回覆選項 ⚙️',
@@ -1404,7 +1519,7 @@ function renderSetup() {
 
 function render() {
   const view = $('#view');
-  const renderers = { todo: renderTodo, progress: renderProgress, generate: renderGenerate, manage: renderManage };
+  const renderers = { todo: renderTodo, calendar: renderCalendar, progress: renderProgress, generate: renderGenerate, manage: renderManage };
   // 整頁重畫時保留還沒送出的輸入框內容和游標所在的欄位（例如打到一半，雲端剛好同步進來）
   const drafts = {};
   view.querySelectorAll('input.input[id]').forEach(el => { drafts[el.id] = el.value; });
