@@ -898,7 +898,7 @@ function renderManage() {
         <button class="btn" data-action="export">📤 匯出資料（備份）</button>
         <button class="btn" data-action="change-name">👤 更改我的名字（目前：${esc(sync.name || UNNAMED)}）</button>
         <button class="btn ghost" data-action="change-key">🔑 重新輸入連線碼</button>
-        <button class="btn ghost" data-action="show-disclaimer">📜 使用須知與免責聲明</button>
+        <button class="btn ghost" data-action="show-disclaimer">📜 使用須知與授權</button>
       </div>
     </section>`;
 }
@@ -1412,13 +1412,22 @@ const actions = {
   'show-disclaimer'() {
     const agreed = sync.agreed;
     openSheet({
-      title: '📜 使用須知與免責聲明',
+      title: '📜 使用須知與授權',
       tall: true,
       footer: '<button class="btn primary" data-sheet-cancel>關閉</button>',
-      body: `<div class="disclaimer">${esc(DISCLAIMER_TEXT)}</div>
-        ${agreed ? `<p class="hint" style="margin:12px 0 0">${esc(agreed.name)} 在 ${esc(agreed.time)} 同意了第 ${agreed.version} 版</p>` : ''}`,
+      body: `<h3 class="cal-sub">使用須知與免責聲明（第 ${DISCLAIMER_VERSION} 版）</h3>
+        <div class="disclaimer">${esc(DISCLAIMER_TEXT)}</div>
+        ${agreed ? `<p class="hint" style="margin:12px 0 0">${esc(agreed.name)} 在 ${esc(agreed.time)} 同意了第 ${agreed.version} 版</p>` : ''}
+        <h3 class="cal-sub" style="margin-top:22px">字型授權</h3>
+        <p class="disclaimer">${esc(FONT_NOTICE)}</p>
+        <div class="disclaimer scroll" id="font-license">載入中…</div>`,
       onMount(overlay) {
         overlay.querySelector('[data-sheet-cancel]').addEventListener('click', closeSheet);
+        // 官方授權檔跟字型放在一起（fonts/OFL-jf-openhuninn.txt），打開時才讀
+        fetch('fonts/OFL-jf-openhuninn.txt')
+          .then(r => (r.ok ? r.text() : Promise.reject()))
+          .then(text => { overlay.querySelector('#font-license').textContent = text; })
+          .catch(() => { overlay.querySelector('#font-license').textContent = '（需要網路才能載入授權全文）'; });
       },
     });
   },
@@ -1594,6 +1603,9 @@ const AGREE_ITEMS = [
   '我會依《個人資料保護法》妥善使用客戶資料',
   '我已閱讀並同意上述使用須知與免責聲明',
 ];
+
+// 字型授權說明（電腦版 FONT_NOTICE 一樣）
+const FONT_NOTICE = '本程式使用的字型「jf open 粉圓」由 justfont 以 SIL Open Font License 1.1 授權釋出，其中的漢字部分衍生自 MOTOYA 的 Kosugi Maru（Apache License 2.0），英數字部分衍生自 Varela Round（SIL OFL 1.1）。完整授權條款如下。';
 
 function hasAgreed() { return !!(sync.agreed && sync.agreed.version >= DISCLAIMER_VERSION); }
 
