@@ -449,15 +449,37 @@ function selectedCompany() {
 // ───────────────────────── 修改標記 ─────────────────────────
 // 改過的項目記下「誰、什麼時候改的」，對方勾「已看過」就刪掉。格式跟電腦版一樣。
 const UNNAMED = '未命名';
-function newMark() {
+// action：新增／修改／完成／取消完成
+function newMark(action = '修改') {
   const d = new Date();
-  return { '誰': sync.name || UNNAMED, '時間': `${isoDate(d)} ${pad(d.getHours())}:${pad(d.getMinutes())}` };
+  return { '誰': sync.name || UNNAMED, '時間': `${isoDate(d)} ${pad(d.getHours())}:${pad(d.getMinutes())}`, '動作': action };
 }
 function isMine(mark) { return mark['誰'] === (sync.name || UNNAMED); }
-function markTimeText(mark) {
+// 「3 小時 25 分鐘前新增」：一天內顯示幾小時幾分鐘前，超過一天顯示「2 天前（10/21 14:05）」。
+// 舊標記沒有記動作，一律當「修改」。電腦版 mark_ago_text 一樣。
+function markAgoText(mark) {
+  const action = mark['動作'] || '修改';
   const t = mark['時間'] || '';
-  return t.length >= 16 ? `${t.slice(5, 7)}/${t.slice(8, 10)} ${t.slice(11, 16)}` : t;
+  const m = t.match(/^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})$/);
+  if (!m) return `${t} ${action}`;
+  const when = new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]);
+  const minutes = Math.floor((Date.now() - when.getTime()) / 60000);
+  if (minutes < 1) return `剛剛${action}`;   // 兩台裝置時鐘差一點點時可能是負的，也算剛剛
+  if (minutes < 60) return `${minutes} 分鐘前${action}`;
+  if (minutes < 24 * 60) {
+    const h = Math.floor(minutes / 60), mm = minutes % 60;
+    return `${h} 小時${mm ? ` ${mm} 分鐘` : ''}前${action}`;
+  }
+  return `${Math.floor(minutes / 1440)} 天前${action}（${+m[2]}/${+m[3]} ${m[4]}:${m[5]}）`;
 }
+
+// 每分鐘只改標記上的時間文字，不整頁重畫，打字才不會被打斷
+function tickMarkTimes() {
+  document.querySelectorAll('.mark-ago').forEach(el => {
+    el.textContent = markAgoText({ '時間': el.dataset.time, '動作': el.dataset.act });
+  });
+}
+setInterval(tickMarkTimes, 60 * 1000);
 
 // 這間公司底下看得到的標記（客戶進度＋公司與選項），紅點用。月度進度只看本月。
 function companyMarks(company) {
@@ -473,9 +495,10 @@ function dotHtml(company) { return hasUnseen(company) ? '<span class="mark-dot" 
 function markHtml(mark, ref, prefix = '') {
   if (!mark) return '';
   const lead = prefix ? `<span>${prefix}</span>` : '';
-  if (isMine(mark)) return `<div class="mark mine">${lead}<span>✏️ 你 ${esc(markTimeText(mark))}・等對方確認</span></div>`;
+  const ago = `<span class="mark-ago" data-time="${esc(mark['時間'] || '')}" data-act="${esc(mark['動作'] || '')}">${esc(markAgoText(mark))}</span>`;
+  if (isMine(mark)) return `<div class="mark mine">${lead}<span>✏️ 你・${ago}・等對方確認</span></div>`;
   return `
-    <div class="mark">${lead}<span class="mark-pill">✏️ ${esc(mark['誰'])} ${esc(markTimeText(mark))}</span>
+    <div class="mark">${lead}<span class="mark-pill">✏️ ${esc(mark['誰'])}・${ago}</span>
       ${checkHtml({ checked: false, change: 'ack-mark', data: { ref }, label: '已看過' })}
     </div>`;
 }
@@ -990,7 +1013,7 @@ function openCompanyForm(existing) {
         if (existing) {
           Object.assign(existing, { '編號': code, '名稱': name, '取件地址': address, '修改標記': newMark() });
         } else {
-          const company = { id: uid(), '編號': code, '名稱': name, '取件地址': address, '選項': [], '修改標記': newMark() };
+          const company = { id: uid(), '編號': code, '名稱': name, '取件地址': address, '選項': [], '修改標記': newMark('新增') };
           state.companies.push(company);
           ui.companyId = company.id;
           ui.genIndex = null;
@@ -1056,7 +1079,7 @@ function openOptionForm(company, type, index) {
     <label class="field-label" for="f-title">選項標題</label>
     <input id="f-title" class="input" value="${esc(existing?.['標題'] || '')}" placeholder="例如：營業稅補件">`;
   const commit = option => {
-    option['修改標記'] = newMark();
+    option['修改標記'] = newMark(existing ? '修改' : '新增');
     if (existing) company['選項'][index] = option;
     else (company['選項'] = company['選項'] || []).push(option);
     save();
@@ -1215,7 +1238,7 @@ const actions = {
     const content = input.value.trim();
     if (!content) { toast('請輸入待辦內容'); input.focus(); return; }
     input.value = '';
-    state.todos.push({ id: uid(), '日期': pickedIso('todo'), '內容': content, '完成': false, '修改標記': newMark() });
+    state.todos.push({ id: uid(), '日期': pickedIso('todo'), '內容': content, '完成': false, '修改標記': newMark('新增') });
     save();
     render();
     toast('已新增～吱吱 🐹');
@@ -1249,7 +1272,7 @@ const actions = {
     const content = input.value.trim();
     if (!content) { toast('請輸入待辦內容'); input.focus(); return; }
     input.value = '';
-    state.todos.push({ id: uid(), '日期': ui.cal.day, '內容': content, '完成': false, '修改標記': newMark() });
+    state.todos.push({ id: uid(), '日期': ui.cal.day, '內容': content, '完成': false, '修改標記': newMark('新增') });
     save();
     render();
     toast('已新增～吱吱 🐹');
@@ -1262,7 +1285,7 @@ const actions = {
     if (!title) { toast('請輸入截止日期的標題'); input.focus(); return; }
     const company = selectedCompany();
     input.value = '';
-    (company['截止日期'] = company['截止日期'] || []).push({ id: uid(), '標題': title, '日期': pickedIso('deadline'), '完成': false, '修改標記': newMark() });
+    (company['截止日期'] = company['截止日期'] || []).push({ id: uid(), '標題': title, '日期': pickedIso('deadline'), '完成': false, '修改標記': newMark('新增') });
     save();
     render();
   },
@@ -1282,7 +1305,7 @@ const actions = {
     const d = new Date();
     const time = `${isoDate(d)} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
     input.value = '';
-    (company['催件紀錄'] = company['催件紀錄'] || []).unshift({ id: uid(), '時間': time, '內容': content, '修改標記': newMark() });
+    (company['催件紀錄'] = company['催件紀錄'] || []).unshift({ id: uid(), '時間': time, '內容': content, '修改標記': newMark('新增') });
     save();
     render();
   },
@@ -1450,7 +1473,7 @@ const changes = {
   },
   'toggle-todo'(el) {
     const todo = state.todos.find(t => t.id === el.dataset.id);
-    if (todo) Object.assign(todo, { '完成': el.checked, '修改標記': newMark() });
+    if (todo) Object.assign(todo, { '完成': el.checked, '修改標記': newMark(el.checked ? '完成' : '取消完成') });
     save();
     render();
     if (el.checked) cheer();
@@ -1464,7 +1487,7 @@ const changes = {
     company['月度進度'][monthKey][task] = el.checked;
     company['月度進度標記'] = company['月度進度標記'] || {};
     company['月度進度標記'][monthKey] = company['月度進度標記'][monthKey] || {};
-    company['月度進度標記'][monthKey][task] = newMark();
+    company['月度進度標記'][monthKey][task] = newMark(el.checked ? '完成' : '取消完成');
     save();
     render();
     if (el.checked) cheer();
@@ -1472,7 +1495,7 @@ const changes = {
   'toggle-deadline'(el) {
     const company = el.dataset.company ? findCompany(el.dataset.company) : selectedCompany();
     const deadline = (company['截止日期'] || []).find(d => d.id === el.dataset.id);
-    if (deadline) Object.assign(deadline, { '完成': el.checked, '修改標記': newMark() });
+    if (deadline) Object.assign(deadline, { '完成': el.checked, '修改標記': newMark(el.checked ? '完成' : '取消完成') });
     save();
     render();
     if (el.checked) cheer();
