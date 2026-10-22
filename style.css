@@ -503,3 +503,16 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .cal-legend span { white-space: nowrap; display: inline-flex; align-items: center; gap: 4px; }
 .cal-legend .dot { margin-left: 0; }
 .cal-cell > span:first-of-type { text-shadow: 0 0 3px #fff, 0 0 3px #fff, 0 0 2px #fff; }
+
+/* ── 貓咪元素 ── */
+/* 背景很淡的貓掌印（兩組錯開，比較不像格子） */
+body {
+  background-image:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120' viewBox='0 0 120 120'%3E%3Cg fill='%23D6E6F7' transform='rotate(-18 30 30)'%3E%3Cellipse cx='30' cy='36' rx='9' ry='7.5'/%3E%3Ccircle cx='19' cy='25' r='3.6'/%3E%3Ccircle cx='26' cy='20' r='3.6'/%3E%3Ccircle cx='34' cy='20' r='3.6'/%3E%3Ccircle cx='41' cy='25' r='3.6'/%3E%3C/g%3E%3Cg fill='%23D6E6F7' transform='rotate(16 90 90)'%3E%3Cellipse cx='90' cy='96' rx='9' ry='7.5'/%3E%3Ccircle cx='79' cy='85' r='3.6'/%3E%3Ccircle cx='86' cy='80' r='3.6'/%3E%3Ccircle cx='94' cy='80' r='3.6'/%3E%3Ccircle cx='101' cy='85' r='3.6'/%3E%3C/g%3E%3C/svg%3E");
+  background-size: 120px 120px;
+}
+.empty-cat { text-align: center; padding: 18px 0 8px; color: var(--text-light); }
+.empty-cat .sleeping-cat { width: 132px; height: 88px; display: block; margin: 0 auto 6px; }
+.empty-cat p { margin: 0; font-size: 14px; }
+.reminder-cat { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; color: var(--pink-dark); }
+.reminder-cat .logo { width: 48px; height: 48px; }

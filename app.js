@@ -72,6 +72,32 @@ function avatarColor(seed) {
   return AVATAR_PALETTE[h % AVATAR_PALETTE.length];
 }
 
+// ───────────────────────── 貓咪元素 ─────────────────────────
+// 勾完成時隨機跳一句（電腦版 CAT_CHEERS 一樣）
+const CAT_CHEERS = ['喵～完成一件了 🐾', '好棒喵！又搞定一件 🐾', '辛苦了喵～ 🐾', '喵嗚～做得好 🐾'];
+function cheer() { toast(CAT_CHEERS[Math.floor(Math.random() * CAT_CHEERS.length)]); }
+
+// 沒有資料時顯示的睡覺小貓，座標 120x80，跟電腦版 make_sleeping_cat 一樣
+const SLEEPING_CAT_SVG = `
+  <svg class="sleeping-cat" viewBox="0 0 120 80" aria-hidden="true">
+    <g fill="none" stroke="#B9A6FF" stroke-width="2" stroke-linejoin="round" stroke-linecap="round">
+      <polyline points="64,14 71,14 64,21 71,21"/><polyline points="74,2 84,2 74,12 84,12"/>
+    </g>
+    <path d="M102 30 A12 18 0 0 1 102 66" fill="none" stroke="#FFC4D6" stroke-width="6"/>
+    <circle cx="102" cy="30" r="3" fill="#FFC4D6"/>
+    <ellipse cx="71" cy="54" rx="35" ry="20" fill="#FFC4D6"/>
+    <path d="M14 44 L16 22 L32 33 Z M36 32 L50 22 L53 42 Z" fill="#FFC4D6"/>
+    <path d="M19 40 L20 28 L29 34 Z M40 33 L48 27 L49 39 Z" fill="#FFE3EC"/>
+    <ellipse cx="35" cy="50" rx="23" ry="20" fill="#FFC4D6"/>
+    <path d="M28.76 50.7 A4 3.5 0 0 1 21.24 50.7 M45.76 50.7 A4 3.5 0 0 1 38.24 50.7" fill="none" stroke="#4A4458" stroke-width="1.8" stroke-linecap="round"/>
+    <ellipse cx="20.5" cy="56" rx="3.5" ry="2" fill="#FF9EBB"/>
+    <ellipse cx="46.5" cy="56" rx="3.5" ry="2" fill="#FF9EBB"/>
+    <path d="M32.5 55 L37.5 55 L35 57.5 Z" fill="#FF7A9A"/>
+  </svg>`;
+function emptyCatHtml(text) {
+  return `<div class="empty-cat">${SLEEPING_CAT_SVG}<p>${text}</p></div>`;
+}
+
 let toastTimer = null;
 function toast(text, duration = 1800) {
   const el = $('#toast');
@@ -553,7 +579,7 @@ function renderTodo() {
       </div>
     </section>
     <h2 class="section-title">📋 待辦清單</h2>
-    ${rows || '<p class="empty">目前沒有待辦事項～</p>'}`;
+    ${rows || emptyCatHtml('目前沒有待辦事項，貓咪在睡覺～ 🐾')}`;
 }
 
 // ───────────────────────── 行事曆 ─────────────────────────
@@ -669,7 +695,7 @@ function renderCalendar() {
         <button class="btn primary" data-action="add-cal-todo">新增</button>
       </div>
       <div style="margin-top:12px">
-        ${empty ? '<p class="empty">這天沒有安排～</p>' : ''}
+        ${empty ? emptyCatHtml('這天沒有安排，貓咪在睡覺～') : ''}
         ${todoHtml ? `<h3 class="cal-sub">📅 待辦</h3>${todoHtml}` : ''}
         ${deadlineHtml ? `<h3 class="cal-sub">⏰ 截止日期</h3>${deadlineHtml}` : ''}
         ${logHtml ? `<h3 class="cal-sub">💬 這天的催件紀錄</h3>${logHtml}` : ''}
@@ -841,7 +867,7 @@ async function copyOutput() {
     document.execCommand('copy');
     area.blur();
   }
-  toast('已複製好囉～💕 可以去 LINE 貼上了');
+  toast('已複製好囉～喵 💕 可以去 LINE 貼上了');
 }
 
 // ───────────────────────── 管理 ─────────────────────────
@@ -1008,7 +1034,7 @@ function openCompanyForm(existing) {
         }
         save();
         render();
-        toast('已儲存好囉～✨');
+        toast('已儲存好囉～喵 🐾');
       });
     },
   });
@@ -1072,7 +1098,7 @@ function openOptionForm(company, type, index) {
     else (company['選項'] = company['選項'] || []).push(option);
     save();
     render();
-    toast('已儲存好囉～✨');
+    toast('已儲存好囉～喵 🐾');
   };
   const readTitle = () => {
     const title = $('#f-title').value.trim();
@@ -1163,9 +1189,10 @@ function openReminderSheet(items) {
     return `${d['公司']}－${d['標題']}（${when}）`;
   };
   openSheet({
-    title: '💗 今日提醒',
+    title: '🐱 今日提醒',
     footer: '<button class="btn primary" data-sheet-cancel>知道了</button>',
-    body: section('📅 今日待辦', items.todos.map(t => t['內容'] || ''), 'var(--blue-text)')
+    body: `<div class="reminder-cat">${$('.logo').outerHTML}<b>今天也一起加油喵～ 🐾</b></div>`
+      + section('📅 今日待辦', items.todos.map(t => t['內容'] || ''), 'var(--blue-text)')
       + section('⏰ 即將到期的截止日期', items.deadlines.map(deadlineText), 'var(--danger-dark)')
       + section('📋 本月還沒完成的事項', items.monthly.map(m => `${m['公司']}－${m['項目']}`), '#E5668E'),
     onMount(overlay) {
@@ -1228,7 +1255,7 @@ const actions = {
     state.todos.push({ id: uid(), '日期': pickedIso('todo'), '內容': content, '完成': false, '修改標記': newMark() });
     save();
     render();
-    toast('已新增 ✨');
+    toast('已新增喵 🐾');
   },
   'delete-todo'(el) {
     confirmTwice(el, `todo-${el.dataset.id}`, () => {
@@ -1262,7 +1289,7 @@ const actions = {
     state.todos.push({ id: uid(), '日期': ui.cal.day, '內容': content, '完成': false, '修改標記': newMark() });
     save();
     render();
-    toast('已新增 ✨');
+    toast('已新增喵 🐾');
   },
 
   'manage-monthly'() { openMonthlyTasksForm(selectedCompany()); },
@@ -1353,7 +1380,7 @@ const actions = {
     state.settings['開頭本文'] = text;
     save();
     render();
-    toast('已儲存好囉～✨');
+    toast('已儲存好囉～喵 🐾');
   },
   export: exportData,
   async 'sync-now'() {
@@ -1431,6 +1458,7 @@ const changes = {
     if (todo) Object.assign(todo, { '完成': el.checked, '修改標記': newMark() });
     save();
     render();
+    if (el.checked) cheer();
   },
   'toggle-monthly'(el) {
     const company = selectedCompany();
@@ -1444,6 +1472,7 @@ const changes = {
     company['月度進度標記'][monthKey][task] = newMark();
     save();
     render();
+    if (el.checked) cheer();
   },
   'toggle-deadline'(el) {
     const company = el.dataset.company ? findCompany(el.dataset.company) : selectedCompany();
@@ -1451,6 +1480,7 @@ const changes = {
     if (deadline) Object.assign(deadline, { '完成': el.checked, '修改標記': newMark() });
     save();
     render();
+    if (el.checked) cheer();
   },
   'ack-mark'(el) {
     const [holder, key] = resolveMarkRef(el.dataset.ref);
@@ -1499,7 +1529,7 @@ document.addEventListener('keydown', e => {
 
 // ───────────────────────── 繪製 ─────────────────────────
 const TAB_SUBTITLES = {
-  todo: '今天也辛苦了 ⭐',
+  todo: '今天也辛苦了喵 🐾',
   calendar: '這個月有什麼事 📆',
   progress: '看看每間公司的進度 📊',
   generate: '挑一間公司開始吧 💌',
