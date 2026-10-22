@@ -77,25 +77,10 @@ function avatarColor(seed) {
 const CAT_CHEERS = ['喵～完成一件了 🐾', '好棒喵！又搞定一件 🐾', '辛苦了喵～ 🐾', '喵嗚～做得好 🐾'];
 function cheer() { toast(CAT_CHEERS[Math.floor(Math.random() * CAT_CHEERS.length)]); }
 
-// 沒有資料時顯示的睡覺小貓，座標 120x80，跟電腦版 make_sleeping_cat 一樣
-const SLEEPING_CAT_SVG = `
-  <svg class="sleeping-cat" viewBox="0 0 120 80" aria-hidden="true">
-    <g fill="none" stroke="#B9A6FF" stroke-width="2" stroke-linejoin="round" stroke-linecap="round">
-      <polyline points="64,14 71,14 64,21 71,21"/><polyline points="74,2 84,2 74,12 84,12"/>
-    </g>
-    <path d="M102 30 A12 18 0 0 1 102 66" fill="none" stroke="#FFC4D6" stroke-width="6"/>
-    <circle cx="102" cy="30" r="3" fill="#FFC4D6"/>
-    <ellipse cx="71" cy="54" rx="35" ry="20" fill="#FFC4D6"/>
-    <path d="M14 44 L16 22 L32 33 Z M36 32 L50 22 L53 42 Z" fill="#FFC4D6"/>
-    <path d="M19 40 L20 28 L29 34 Z M40 33 L48 27 L49 39 Z" fill="#FFE3EC"/>
-    <ellipse cx="35" cy="50" rx="23" ry="20" fill="#FFC4D6"/>
-    <path d="M28.76 50.7 A4 3.5 0 0 1 21.24 50.7 M45.76 50.7 A4 3.5 0 0 1 38.24 50.7" fill="none" stroke="#4A4458" stroke-width="1.8" stroke-linecap="round"/>
-    <ellipse cx="20.5" cy="56" rx="3.5" ry="2" fill="#FF9EBB"/>
-    <ellipse cx="46.5" cy="56" rx="3.5" ry="2" fill="#FF9EBB"/>
-    <path d="M32.5 55 L37.5 55 L35 57.5 Z" fill="#FF7A9A"/>
-  </svg>`;
+// 沒有資料時顯示的睡覺小貓（art/cat-sleep.png，跟電腦版同一張圖）
+const SLEEPING_CAT_IMG = '<img class="sleeping-cat" src="art/cat-sleep.png" alt="">';
 function emptyCatHtml(text) {
-  return `<div class="empty-cat">${SLEEPING_CAT_SVG}<p>${text}</p></div>`;
+  return `<div class="empty-cat">${SLEEPING_CAT_IMG}<p>${text}</p></div>`;
 }
 
 let toastTimer = null;
@@ -603,37 +588,12 @@ function isUrgent(dateText, done, isDeadline) {
   return isDeadline ? left <= DEADLINE_WARNING_DAYS : left < 0;
 }
 
-// 過去的日子蓋貓咪印章（集點卡的感覺）。圖案跟電腦版 make_cat_stamp 一樣，座標 100x100；
-// 眼睛鼻子嘴巴用 mask 挖空，像印章鏤空的地方
+// 過去的日子蓋貓咪印章（集點卡的感覺）。art/cat-stamp.png 跟電腦版同一張，角度用日期決定
 const STAMP_ANGLES = [-14, -6, 5, 13];
-const CAT_STAMP_DEFS = `
-  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
-    <defs>
-      <mask id="cat-face-cut">
-        <rect width="100" height="100" fill="#fff"/>
-        <g fill="none" stroke="#000" stroke-linecap="round">
-          <path d="M37 52 Q41 46 45 52 M55 52 Q59 46 63 52" stroke-width="3"/>
-          <path d="M44.5 60 Q47 63.5 50 60 Q53 63.5 55.5 60" stroke-width="2"/>
-        </g>
-        <path d="M47 57 L53 57 L50 60.5 Z" fill="#000"/>
-      </mask>
-    </defs>
-  </svg>`;
 function catStampHtml(iso) {
   const day = Math.round(parseIso(iso).getTime() / 86400000);
   const angle = STAMP_ANGLES[((day % 4) + 4) % 4];
-  return `
-    <svg class="stamp" viewBox="0 0 100 100" aria-hidden="true">
-      <g transform="rotate(${angle} 50 50)" fill="currentColor" stroke="currentColor">
-        <circle cx="50" cy="50" r="41" fill="none" stroke-width="6"/>
-        <circle cx="50" cy="50" r="36.2" fill="none" stroke-width="1.6"/>
-        <g mask="url(#cat-face-cut)" stroke="none">
-          <path d="M28 44 L31 20 L46 33 Z M72 44 L69 20 L54 33 Z"/>
-          <ellipse cx="50" cy="52" rx="26" ry="21"/>
-        </g>
-        <path d="M24 56 L13 53 M24 61 L13 63 M76 56 L87 53 M76 61 L87 63" fill="none" stroke-width="1.8" stroke-linecap="round"/>
-      </g>
-    </svg>`;
+  return `<img class="stamp" src="art/cat-stamp.png" alt="" style="transform: rotate(${-angle}deg)">`;
 }
 
 function renderCalendar() {
@@ -675,7 +635,6 @@ function renderCalendar() {
 
   return `
     <section class="card cal-card">
-      ${CAT_STAMP_DEFS}
       <div class="cal-nav">
         <button class="btn small" data-action="cal-shift" data-delta="-1" aria-label="上個月">◀</button>
         <b>${y} 年 ${m} 月</b>
