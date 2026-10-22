@@ -516,3 +516,6 @@ body {
 .empty-art p { margin: 0; font-size: 14px; }
 .reminder-art { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; color: var(--pink-dark); }
 .reminder-art .logo { width: 48px; height: 48px; }
+
+/* 程式名稱後面的葵瓜子（跟電腦版側欄標題一樣，稍微往右歪） */
+.name-seed { height: 0.95em; width: auto; margin-left: 5px; vertical-align: -0.1em; transform: rotate(12deg); }
