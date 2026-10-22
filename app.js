@@ -921,6 +921,13 @@ function renderManage() {
         <button class="btn" data-action="export">📤 匯出資料（備份）</button>
         <button class="btn" data-action="change-name">👤 更改我的名字（目前：${esc(sync.name || UNNAMED)}）</button>
         <button class="btn ghost" data-action="change-key">🔑 重新輸入連線碼</button>
+      </div>
+    </section>
+    <section class="card">
+      <h2 class="card-title">❓ 說明與客服</h2>
+      <div class="btn-row" style="flex-direction:column">
+        <button class="btn" data-action="open-help">📖 使用教學</button>
+        <button class="btn" data-action="open-support">💬 聯絡客服</button>
         <button class="btn ghost" data-action="show-disclaimer">📜 使用須知與授權</button>
       </div>
     </section>`;
@@ -1432,6 +1439,19 @@ const actions = {
     toast(`嗨 ${name}～歡迎使用小助手阿焙焙 🐹`, 2600);
     maybeShowReminder();
   },
+  'open-help'() { openTutorialSheet(); },
+  'open-support'() {
+    closeSheet();
+    openSupportSheet();
+  },
+  async 'copy-line-id'() {
+    try {
+      await navigator.clipboard.writeText(SUPPORT_LINE_ID);
+      toast('已複製 LINE ID～');
+    } catch (e) {
+      toast(`複製不了，請手動輸入：${SUPPORT_LINE_ID}`, 3000);
+    }
+  },
   'show-disclaimer'() {
     const agreed = sync.agreed;
     openSheet({
@@ -1630,6 +1650,87 @@ const AGREE_ITEMS = [
 // 字型授權說明（電腦版 FONT_NOTICE 一樣）
 const FONT_NOTICE = '本程式使用的字型「jf open 粉圓」由 justfont 以 SIL Open Font License 1.1 授權釋出，其中的漢字部分衍生自 MOTOYA 的 Kosugi Maru（Apache License 2.0），英數字部分衍生自 Varela Round（SIL OFL 1.1）。完整授權條款如下。';
 
+// ───────────────────────── 使用教學＋聯絡客服 ─────────────────────────
+// 內容跟電腦版 bookkeeping_reply_helper.py 的 TUTORIAL_SECTIONS／SUPPORT_* 一模一樣，改的時候兩邊一起改
+const SUPPORT_NAME = '喨喨';
+const SUPPORT_LINE_ID = 'jim91122';   // 改了的話，電腦版資料夾 art/make_baozi_art.py 的 QR Code 也要重做
+const TUTORIAL_SECTIONS = [
+  ['📅', '每日待辦', [
+    '選日期、輸入要做的事，按「新增」（電腦可以直接按 Enter）',
+    '做完就勾選，會劃掉；過了日期還沒做的會變成紅色',
+    '不要的按「刪除」（手機要連按兩次，避免按錯）',
+  ], ['電腦版可以勾「開機自動跳出今日提醒」，每天開機就會提醒今天要做的事']],
+  ['📆', '行事曆', [
+    '待辦和各公司的截止日期都排在月曆上',
+    '點某一天，就能看到那天所有的事，也可以直接在那天新增待辦',
+    '按「◀ ▶」換月份，按「回到今天」跳回這個月',
+  ], ['過完的日子會蓋上焙子印章；紅字代表已經逾期，或截止日期 3 天內到期',
+    '電腦版有獨立的「桌面行事曆」視窗，開機會自動出現，不想要可以在行事曆分頁取消勾選']],
+  ['📊', '客戶進度', [
+    '先選一間公司（電腦在左邊清單，手機點最上面的公司名稱）',
+    '本月待辦：每個月固定要做的事，按「管理項目」設定，做完就勾',
+    '截止日期：選日期、輸入標題、按「新增」，完成就勾',
+    '催件紀錄：聯絡過客戶就記一筆，會自動記下時間',
+  ], []],
+  ['✏️', '產生文字', [
+    '選公司，再選一個回覆選項',
+    '可勾選清單：勾要跟客戶要的項目；取件提醒：選取件日期；問候語也可以換',
+    '內容可以自己再改，按「複製」後貼到 LINE 傳給客戶',
+  ], ['傳出去之前，記得再確認一次內容和日期']],
+  ['⚙️', '公司與選項管理', [
+    '新增、編輯、刪除公司（編號、名稱、取件地址）',
+    '每間公司有自己的回覆選項，分三種：固定文字、可勾選清單、取件提醒',
+    '可勾選清單開頭的那句話是所有公司共用的，在「開頭本文」修改',
+  ], ['選項只屬於那一間公司，好幾間都要用的話，每間各加一次']],
+  ['☁️', '手機和電腦同步', [
+    '在哪一邊改，另一邊大約 20 秒內就會更新；切回程式時也會馬上更新',
+    '改過的地方會出現修改標記，例如「喨喨・3 小時前新增」，對方勾「已看過」標記就會消失',
+    '公司名字旁邊的紅點，代表裡面有對方改過、你還沒看過的東西',
+  ], ['手機和電腦請用同一個暱稱，才會被當成同一個人',
+    '沒網路時改的東西會先存在裝置上，連上網路後會自動上傳',
+    '兩邊剛好同時改到時，會提示你「再操作一次」']],
+];
+
+function openTutorialSheet() {
+  const sections = TUTORIAL_SECTIONS.map(([icon, title, steps, tips]) => `
+    <section class="tutorial-card">
+      <h3>${icon} ${title}</h3>
+      <ol>${steps.map(s => `<li>${esc(s)}</li>`).join('')}</ol>
+      ${tips.map(t => `<p class="tutorial-tip">💡 ${esc(t)}</p>`).join('')}
+    </section>`).join('');
+  openSheet({
+    title: '📖 使用教學',
+    tall: true,
+    footer: '<button class="btn" data-action="open-support">💬 聯絡客服</button><button class="btn primary" data-sheet-cancel>關閉</button>',
+    body: sections,
+    onMount(overlay) {
+      overlay.querySelector('[data-sheet-cancel]').addEventListener('click', closeSheet);
+    },
+  });
+}
+
+function openSupportSheet() {
+  openSheet({
+    title: '💬 聯絡客服',
+    tall: true,
+    footer: '<button class="btn primary" data-sheet-cancel>關閉</button>',
+    body: `
+      <div class="support">
+        <p>使用上遇到問題，歡迎用 LINE 聯絡～</p>
+        <p class="support-name">客服：${esc(SUPPORT_NAME)}</p>
+        <p class="support-id">LINE ID：${esc(SUPPORT_LINE_ID)}</p>
+        <a class="btn primary block" href="https://line.me/ti/p/~${encodeURIComponent(SUPPORT_LINE_ID)}" target="_blank" rel="noopener">💚 開啟 LINE 加好友</a>
+        <button class="btn block" style="margin-top:8px" data-action="copy-line-id">📋 複製 LINE ID</button>
+        <img class="support-qr" src="art/line_qr.png" alt="LINE 加好友 QR Code">
+        <p class="hint">用電腦或別支手機開這個畫面時，可以用 LINE 掃描 QR Code 加好友</p>
+        <p class="hint">聯絡時可以說明：在哪個畫面、做了什麼、出現什麼訊息，有截圖會更快找到問題喔！</p>
+      </div>`,
+    onMount(overlay) {
+      overlay.querySelector('[data-sheet-cancel]').addEventListener('click', closeSheet);
+    },
+  });
+}
+
 function hasAgreed() { return !!(sync.agreed && sync.agreed.version >= DISCLAIMER_VERSION); }
 
 function renderWelcome() {
@@ -1671,6 +1772,7 @@ function renderWelcome() {
           <input id="key-input" class="input" placeholder="貼上連線碼" autocomplete="off" autocapitalize="off" spellcheck="false">
           <p class="hint" style="margin:6px 0 0">貼上之後，手機就會跟電腦版的資料連在一起。只要輸入一次，之後會記在這支手機裡。</p>`}
       </section>
+      <p class="hint" style="margin:0 4px 12px">之後點右上角的「📖 教學・客服」，可以看教學或聯絡客服。</p>
       <button class="btn primary block" data-action="welcome-finish">開始使用</button>
       <button class="btn block" style="margin-top:8px" data-action="welcome-go" data-step="2">上一步</button>`;
   }

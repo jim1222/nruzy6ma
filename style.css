@@ -539,3 +539,18 @@ body {
 .agree-list .check { align-items: flex-start; min-height: 0; padding: 7px 0; }
 .agree-list .check .label { font-size: 15px; line-height: 1.5; }
 .btn:disabled { opacity: .45; }
+
+/* ── 使用教學＋聯絡客服 ── */
+.topbar-right { flex: none; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+.help-btn { border: none; background: var(--blue); color: var(--blue-text); font: inherit; font-size: 12px; padding: 4px 10px; border-radius: 12px; cursor: pointer; white-space: nowrap; }
+.tutorial-card { border: 1px solid var(--panel-border); border-radius: 16px; padding: 12px 14px; margin-bottom: 12px; background: #fff; }
+.tutorial-card h3 { margin: 0 0 6px; font-size: 17px; color: var(--blue-text); }
+.tutorial-card ol { margin: 0; padding-left: 22px; }
+.tutorial-card li { margin: 4px 0; line-height: 1.6; }
+.tutorial-tip { margin: 6px 0 0; font-size: 14px; color: #E5668E; line-height: 1.6; }
+.support { text-align: center; }
+.support p { margin: 6px 0; }
+.support-name { font-weight: bold; font-size: 17px; margin-top: 12px !important; }
+.support-id { color: var(--blue-text); font-weight: bold; font-size: 17px; }
+.support a.btn { text-decoration: none; display: flex; align-items: center; justify-content: center; margin-top: 12px; }
+.support-qr { width: 180px; height: 180px; display: block; margin: 16px auto 6px; image-rendering: pixelated; }
