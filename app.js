@@ -1653,7 +1653,7 @@ const FONT_NOTICE = '本程式使用的字型「jf open 粉圓」由 justfont �
 // ───────────────────────── 使用教學＋聯絡客服 ─────────────────────────
 // 內容跟電腦版 bookkeeping_reply_helper.py 的 TUTORIAL_SECTIONS／SUPPORT_* 一模一樣，改的時候兩邊一起改
 const SUPPORT_NAME = '喨喨';
-const SUPPORT_LINE_ID = 'jim91122';   // 改了的話，電腦版資料夾 art/make_baozi_art.py 的 QR Code 也要重做
+const SUPPORT_LINE_ID = 'jim911222';   // 改了的話，電腦版資料夾 art/make_baozi_art.py 的 QR Code 也要重做
 const TUTORIAL_SECTIONS = [
   ['📅', '每日待辦', [
     '選日期、輸入要做的事，按「新增」（電腦可以直接按 Enter）',
