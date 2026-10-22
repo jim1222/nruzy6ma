@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="記帳小幫手">
+<meta name="theme-color" content="#EAF4FF">
+<meta name="robots" content="noindex, nofollow">
+<meta name="format-detection" content="telephone=no">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="manifest" href="manifest.json">
+<link rel="stylesheet" href="style.css">
+<title>記帳小幫手</title>
+</head>
+<body>
+<header class="topbar">
+  <svg class="logo" viewBox="0 0 40 40" aria-hidden="true">
+    <circle cx="20" cy="20" r="20" fill="#FF93B3"/>
+    <polygon id="logo-heart" fill="#fff"/>
+  </svg>
+  <div class="topbar-text">
+    <h1>記帳小幫手</h1>
+    <p id="topbar-sub">今天也辛苦了 ⭐</p>
+  </div>
+  <span id="sync-status" class="sync-status"></span>
+</header>
+
+<main id="view"></main>
+
+<nav class="tabbar">
+  <button data-tab="todo"><span class="tab-icon">📅</span><span>每日待辦</span></button>
+  <button data-tab="progress"><span class="tab-icon">📊</span><span>客戶進度</span></button>
+  <button data-tab="generate"><span class="tab-icon">💌</span><span>產生文字</span></button>
+  <button data-tab="manage"><span class="tab-icon">⚙️</span><span>管理</span></button>
+</nav>
+
+<div id="sheet-root"></div>
+<div id="toast" role="status"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

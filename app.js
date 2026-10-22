@@ -1,0 +1,1338 @@
+// 記帳小幫手手機版。邏輯照電腦版 bookkeeping_reply_helper.py 移植，資料結構完全一樣，
+// 匯出的 JSON 可以直接放回電腦版的「記帳客戶資料」資料夾使用。
+'use strict';
+
+const STORAGE_KEY = 'bookkeeping-helper-v1';
+const GREETING_OPTIONS = ['你好', '早上好', '下午好'];
+const DEADLINE_WARNING_DAYS = 3;
+const DEFAULT_INTRO = '麻煩提供這次所需資料，謝謝您的配合。';
+const OPTION_TYPE_ICONS = { fixed: '📄', checklist: '☑️', pickup: '🚚' };
+const OPTION_TYPE_LABELS = { fixed: '固定文字', checklist: '可勾選清單', pickup: '取件提醒' };
+const PICKUP_VARS = ['{公司}', '{地址}', '{日期}', '{星期}'];
+// JS 的 getDay() 是 0=星期日，跟 Python weekday() 的 0=星期一不同
+const WEEKDAY_CHARS = ['日', '一', '二', '三', '四', '五', '六'];
+const AVATAR_PALETTE = ['#FF93B3', '#B9A6FF', '#7FDDB8', '#7FCBEE', '#FFB366'];
+
+// ───────────────────────── 小工具 ─────────────────────────
+const $ = (sel, root = document) => root.querySelector(sel);
+
+function esc(text) {
+  return String(text ?? '').replace(/[&<>"']/g, ch => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]
+  ));
+}
+
+function clone(data) { return JSON.parse(JSON.stringify(data)); }
+
+function uid() {
+  const bytes = new Uint8Array(4);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+}
+
+function pad(n) { return String(n).padStart(2, '0'); }
+function isoDate(d) { return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; }
+function todayIso() { return isoDate(new Date()); }
+function currentMonthKey(d = new Date()) { return `${d.getFullYear()}-${pad(d.getMonth() + 1)}`; }
+function daysInMonth(year, month) { return new Date(year, month, 0).getDate(); }
+
+function parseIso(text) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec((text || '').trim());
+  if (!m) return null;
+  const d = new Date(+m[1], +m[2] - 1, +m[3]);
+  return d.getMonth() === +m[2] - 1 ? d : null;
+}
+
+function daysFromToday(date) {
+  const now = new Date();
+  const a = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
+  const b = Date.UTC(date.getFullYear(), date.getMonth(), date.getDate());
+  return Math.round((b - a) / 86400000);
+}
+
+function weekdayOf(month, day) {
+  return WEEKDAY_CHARS[new Date(new Date().getFullYear(), month - 1, day).getDay()];
+}
+
+// 「2026-10-22」→「10/22（四）」，手機上比 ISO 格式好讀
+function friendlyDate(text) {
+  const d = parseIso(text);
+  if (!d) return text || '';
+  return `${d.getMonth() + 1}/${d.getDate()}（${WEEKDAY_CHARS[d.getDay()]}）`;
+}
+
+function companyLabel(company) {
+  const code = company['編號'] || '';
+  return `${code}${company['名稱'] || ''}`;
+}
+
+function avatarColor(seed) {
+  let h = 0;
+  for (const ch of (seed || '?')) h += ch.codePointAt(0);
+  return AVATAR_PALETTE[h % AVATAR_PALETTE.length];
+}
+
+function heartPoints(cx, cy, scale) {
+  const pts = [];
+  for (let i = 0; i <= 360; i += 10) {
+    const t = i * Math.PI / 180;
+    const x = 16 * Math.sin(t) ** 3;
+    const y = 13 * Math.cos(t) - 5 * Math.cos(2 * t) - 2 * Math.cos(3 * t) - Math.cos(4 * t);
+    pts.push(`${(cx + x * scale).toFixed(2)},${(cy - y * scale).toFixed(2)}`);
+  }
+  return pts.join(' ');
+}
+
+let toastTimer = null;
+function toast(text, duration = 1800) {
+  const el = $('#toast');
+  el.textContent = text;
+  el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), duration);
+}
+
+// iOS 網頁裡不能用 confirm()，刪除類按鈕改成「按第一次變紅字確認，3 秒內再按一次才真的執行」
+let confirmState = { key: null, timer: null };
+function confirmTwice(button, key, action) {
+  if (confirmState.key === key) {
+    clearTimeout(confirmState.timer);
+    confirmState = { key: null, timer: null };
+    action();
+    return;
+  }
+  clearTimeout(confirmState.timer);
+  document.querySelectorAll('.confirming').forEach(el => {
+    el.classList.remove('confirming');
+    el.textContent = el.dataset.origText;
+  });
+  button.dataset.origText = button.textContent;
+  button.textContent = button.dataset.confirmText || '再按一次確定';
+  button.classList.add('confirming');
+  confirmState = {
+    key,
+    timer: setTimeout(() => {
+      button.classList.remove('confirming');
+      button.textContent = button.dataset.origText;
+      confirmState = { key: null, timer: null };
+    }, 3000),
+  };
+}
+
+// ───────────────────────── 資料 ─────────────────────────
+// 客戶資料不放在網頁程式碼裡（GitHub repo 是公開的），全部從雲端來；
+// 手機這份 localStorage 只是離線時用的備份。
+function emptyState() {
+  return { companies: [], settings: { '開頭本文': DEFAULT_INTRO }, todos: [], reminderShownDate: '' };
+}
+
+function loadState() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) {
+      const data = JSON.parse(raw);
+      if (data && Array.isArray(data.companies)) {
+        data.settings = Object.assign({ '開頭本文': DEFAULT_INTRO }, data.settings || {});
+        data.todos = Array.isArray(data.todos) ? data.todos : [];
+        delete data.seedVersion;
+        return data;
+      }
+    }
+  } catch (e) { /* 讀不到就等雲端 */ }
+  return emptyState();
+}
+
+let storageWarned = false;
+function saveLocal() {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    localStorage.setItem(SYNC_KEY, JSON.stringify(sync));
+  } catch (e) {
+    if (!storageWarned) {
+      storageWarned = true;
+      toast('⚠️ 資料存不進手機，請從主畫面的圖示開啟');
+    }
+  }
+}
+
+// 每次修改都走這裡：先存手機當離線備份，再上傳雲端
+function save() {
+  saveLocal();
+  pushToCloud();
+}
+
+let state = loadState();
+
+// ───────────────────────── 雲端同步 ─────────────────────────
+// 跟電腦版 CloudSync 同一套規則（見 bookkeeping_reply_helper.py）：整份資料帶版本號 rev 上傳，
+// 雲端的 rev 已經變了代表另一台改過，雲端會拒絕並回傳最新版。
+const SYNC_URL = 'https://script.google.com/macros/s/AKfycbxOqVBOVb3cJETBQzIFc7MIKfdP3U_gTH-3iLes2u1uLCF80wtstWroJtiLlY0WL-zy/exec';
+const SYNC_KEY = 'bookkeeping-helper-sync';
+const SYNC_POLL_MS = 20000;
+// ?ns=test 只給測試用，資料會寫到雲端的測試檔
+const SYNC_NS = /^[a-z0-9_-]{1,20}$/.test(new URLSearchParams(location.search).get('ns') || '')
+  ? new URLSearchParams(location.search).get('ns') : 'main';
+
+function loadSync() {
+  try {
+    const data = JSON.parse(localStorage.getItem(SYNC_KEY) || '{}');
+    return {
+      key: data.key || '', rev: data.rev || 0, pending: !!data.pending,
+      offlineEdits: !!data.offlineEdits, sent: Array.isArray(data.sent) ? data.sent : [],
+    };
+  } catch (e) {
+    return { key: '', rev: 0, pending: false, offlineEdits: false, sent: [] };
+  }
+}
+
+function hashText(text) {
+  let h = 5381;
+  for (let i = 0; i < text.length; i++) h = ((h << 5) + h + text.charCodeAt(i)) | 0;
+  return h >>> 0;
+}
+
+// 上傳送出去了、但還沒收到回應 App 就被關掉（或網路斷掉）時，雲端那份新版本其實是這支手機
+// 自己傳的。連續改好幾樣時，前一次上傳可能比後一次晚才到雲端，所以每一次「送出但還沒收到
+// 回應」的上傳都要記著，雲端那份是其中任何一次就接著用，不要誤判成另一台改過而丟掉修改。
+function adoptOwnPush(result) {
+  const hash = hashText(stableStringify(result.data));
+  if (!sync.sent.some(s => result.rev === s.baseRev + 1 && s.hash === hash)) return false;
+  sync.rev = result.rev;
+  sync.sent = sync.sent.filter(s => s.baseRev >= result.rev);
+  sync.offlineEdits = false;
+  if (stableStringify(result.data) === stableStringify(cloudPayload())) {
+    sync.pending = false;
+    saveLocal();
+    setSyncStatus('ok', '☁️ 已同步');
+  } else {
+    pushToCloud();
+  }
+  return true;
+}
+
+let sync = loadSync();
+const syncRun = { busy: false, pushAgain: false, lastPull: 0, status: '' };
+
+function setSyncStatus(kind, text) {
+  syncRun.status = kind;
+  const el = $('#sync-status');
+  if (!el) return;
+  el.textContent = text;
+  el.className = `sync-status ${kind}`;
+}
+
+async function cloudRequest(payload, key = sync.key) {
+  const url = `${SYNC_URL}?key=${encodeURIComponent(key)}&ns=${SYNC_NS}`;
+  // body 用純文字字串，fetch 會送 text/plain，Apps Script 才不會卡在跨網域預檢
+  const resp = payload === undefined
+    ? await fetch(url, { cache: 'no-store' })
+    : await fetch(SYNC_URL, { method: 'POST', body: JSON.stringify(Object.assign({ key, ns: SYNC_NS }, payload)) });
+  const result = await resp.json();
+  if (!result.ok && !result.conflict) throw new Error(result.error || 'cloud error');
+  return result;
+}
+
+async function runSync(kind, payload) {
+  syncRun.busy = true;
+  setSyncStatus('busy', '同步中…');
+  let result;
+  try {
+    result = await cloudRequest(payload);
+  } catch (e) {
+    syncRun.busy = false;
+    // App 被關掉時中斷的請求不算「離線」，不然下次打開會被誤判成要她選資料
+    if (syncRun.unloading) return;
+    if (sync.pending) { sync.offlineEdits = true; saveLocal(); }
+    setSyncStatus('offline', sync.pending ? '⚠️ 離線，稍後上傳' : '⚠️ 離線');
+    return;
+  }
+  // 處理結果放在 try 外面：程式自己的錯誤不能被當成「離線」吞掉
+  syncRun.busy = false;
+  if (kind === 'pull') handlePull(result);
+  else handlePush(result);
+}
+
+function pullFromCloud(minInterval = 0) {
+  if (!sync.key || syncRun.busy || Date.now() - syncRun.lastPull < minInterval) return Promise.resolve();
+  syncRun.lastPull = Date.now();
+  return runSync('pull');
+}
+
+function pushToCloud(force = false) {
+  if (!sync.key) return;
+  sync.pending = true;
+  saveLocal();
+  if (syncRun.busy) { syncRun.pushAgain = true; return; }
+  const data = cloudPayload();
+  sync.sent = [...sync.sent, { baseRev: sync.rev, hash: hashText(stableStringify(data)) }].slice(-10);
+  saveLocal();
+  runSync('push', { baseRev: sync.rev, data, force });
+}
+
+function handlePull(result) {
+  if (adoptOwnPush(result)) return;
+  if (result.data === null || result.data === undefined) {
+    sync.rev = result.rev;
+    pushToCloud();
+    return;
+  }
+  if (result.rev === sync.rev) {
+    if (sync.pending) pushToCloud();
+    else setSyncStatus('ok', '☁️ 已同步');
+    return;
+  }
+  if (sync.pending) {
+    // 改完馬上關掉 App 時，上傳其實可能已經成功、只是手機沒來得及記下新版本號；
+    // 雲端內容跟手機上一模一樣就是這種情況，不用問她
+    if (stableStringify(result.data) === stableStringify(cloudPayload())) {
+      sync.rev = result.rev;
+      sync.pending = false;
+      sync.offlineEdits = false;
+      saveLocal();
+      setSyncStatus('ok', '☁️ 已同步');
+      return;
+    }
+    openConflictSheet(result);
+    return;
+  }
+  applyRemote(result);
+}
+
+function cloudPayload() {
+  const { reminderShownDate, ...data } = state;
+  return data;
+}
+
+function stableStringify(value) {
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map(k => `${JSON.stringify(k)}:${stableStringify(value[k])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function handlePush(result) {
+  if (result.ok) {
+    sync.rev = result.rev;
+    sync.pending = false;
+    sync.offlineEdits = false;
+    sync.sent = [];
+    saveLocal();
+    if (syncRun.pushAgain) { syncRun.pushAgain = false; pushToCloud(); }
+    else setSyncStatus('ok', '☁️ 已同步');
+    return;
+  }
+  syncRun.pushAgain = false;
+  if (adoptOwnPush(result)) return;
+  if (sync.offlineEdits) {
+    openConflictSheet(result);
+    return;
+  }
+  applyRemote(result);
+  toast('另一台裝置剛更新過，已換成最新資料，剛才的修改請再做一次 🙏', 4000);
+}
+
+let pendingRemote = null;
+function applyRemote(result) {
+  // 表單開著的時候先不換資料，表單手上拿的是舊的公司物件，換掉後按儲存會改到舊物件
+  pendingRemote = result;
+  if ($('#sheet-root').children.length) {
+    setTimeout(() => { if (pendingRemote === result) applyRemote(result); }, 1000);
+    return;
+  }
+  pendingRemote = null;
+  const data = result.data || {};
+  state.companies = data.companies || [];
+  state.settings = Object.assign({ '開頭本文': DEFAULT_INTRO }, data.settings || {});
+  state.todos = data.todos || [];
+  sync.rev = result.rev;
+  sync.pending = false;
+  sync.offlineEdits = false;
+  sync.sent = [];
+  saveLocal();
+  if (!findCompany(ui.companyId)) {
+    ui.companyId = state.companies[0]?.id || null;
+    ui.genIndex = null;
+    ui.output = '';
+  }
+  render();
+  setSyncStatus('ok', '☁️ 已同步');
+}
+
+function openConflictSheet(result) {
+  if ($('#sheet-root').children.length) {
+    setTimeout(() => openConflictSheet(result), 1000);
+    return;
+  }
+  openSheet({
+    title: '☁️ 雲端資料不一致',
+    body: `<p style="margin:0 0 10px">這支手機離線時改過資料，電腦（或另一台裝置）也改過。要留下哪一份呢？</p>
+      <p class="hint" style="margin:0">選「用雲端的」的話，這支手機離線時的修改會不見。</p>`,
+    footer: '<button class="btn ghost" id="use-cloud">用雲端的</button><button class="btn primary" id="use-local">用這支手機的</button>',
+    onMount(overlay) {
+      overlay.querySelector('#use-local').addEventListener('click', () => {
+        closeSheet();
+        pushToCloud(true);
+      });
+      overlay.querySelector('#use-cloud').addEventListener('click', () => {
+        closeSheet();
+        applyRemote(result);
+      });
+    },
+  });
+}
+
+function findCompany(id) { return state.companies.find(c => c.id === id) || null; }
+
+// 移植自電腦版 collect_reminder_items()
+function collectReminderItems() {
+  const today = todayIso();
+  const monthKey = currentMonthKey();
+  const todos = state.todos.filter(t => !t['完成'] && t['日期'] === today);
+  const deadlines = [];
+  const monthly = [];
+  for (const company of state.companies) {
+    const name = companyLabel(company);
+    for (const d of company['截止日期'] || []) {
+      if (d['完成']) continue;
+      const due = parseIso(d['日期']);
+      if (!due) continue;
+      const daysLeft = daysFromToday(due);
+      if (daysLeft <= DEADLINE_WARNING_DAYS) {
+        deadlines.push({ 公司: name, 標題: d['標題'] || '', 日期: d['日期'], 剩餘天數: daysLeft });
+      }
+    }
+    const progress = (company['月度進度'] || {})[monthKey] || {};
+    for (const task of company['月度待辦'] || []) {
+      if (!progress[task]) monthly.push({ 公司: name, 項目: task });
+    }
+  }
+  deadlines.sort((a, b) => a['剩餘天數'] - b['剩餘天數']);
+  return { todos, deadlines, monthly };
+}
+
+// ───────────────────────── 畫面狀態 ─────────────────────────
+const now = new Date();
+const ui = {
+  tab: 'todo',
+  companyId: state.companies[0]?.id || null,
+  genIndex: null,
+  greeting: GREETING_OPTIONS[0],
+  checks: {},
+  output: '',
+  dates: {
+    todo: { m: now.getMonth() + 1, d: now.getDate() },
+    deadline: { m: now.getMonth() + 1, d: now.getDate() },
+    pickup: { m: now.getMonth() + 1, d: now.getDate() },
+  },
+};
+
+function pickedIso(key) {
+  const { m, d } = ui.dates[key];
+  return `${new Date().getFullYear()}-${pad(m)}-${pad(d)}`;
+}
+
+function selectedCompany() {
+  let company = findCompany(ui.companyId);
+  if (!company && state.companies.length) {
+    company = state.companies[0];
+    ui.companyId = company.id;
+  }
+  return company;
+}
+
+// ───────────────────────── 共用元件 ─────────────────────────
+function avatarHtml(company) {
+  const name = company['名稱'] || '?';
+  return `<span class="avatar" style="background:${avatarColor(name)}">${esc([...name][0])}</span>`;
+}
+
+function companyPickerHtml() {
+  const company = selectedCompany();
+  if (!company) {
+    return '<div class="card"><p class="empty">還沒有任何公司，請到「管理」分頁新增 🏢</p></div>';
+  }
+  return `
+    <button class="company-picker" data-action="open-company-sheet">
+      ${avatarHtml(company)}
+      <span class="cp-text"><small>目前的公司（點這裡換）</small><b>${esc(companyLabel(company))}</b></span>
+      <span class="chev">▼</span>
+    </button>`;
+}
+
+function monthDayPickerHtml(key, showWeekday = false) {
+  const { m, d } = ui.dates[key];
+  const dim = daysInMonth(new Date().getFullYear(), m);
+  const months = Array.from({ length: 12 }, (_, i) => i + 1)
+    .map(v => `<option value="${v}"${v === m ? ' selected' : ''}>${v}</option>`).join('');
+  const days = Array.from({ length: dim }, (_, i) => i + 1)
+    .map(v => `<option value="${v}"${v === d ? ' selected' : ''}>${v}</option>`).join('');
+  return `
+    <div class="md-picker">
+      <select data-change="date" data-key="${key}" data-part="m" aria-label="月">${months}</select><span>月</span>
+      <select data-change="date" data-key="${key}" data-part="d" aria-label="日">${days}</select><span>日</span>
+      ${showWeekday ? `<span class="weekday">星期${weekdayOf(m, d)}</span>` : ''}
+    </div>`;
+}
+
+function checkHtml({ checked, change, data = {}, label, strike = false }) {
+  const attrs = Object.entries(data).map(([k, v]) => ` data-${k}="${esc(v)}"`).join('');
+  return `
+    <label class="check">
+      <input type="checkbox" data-change="${change}"${attrs}${checked ? ' checked' : ''}>
+      <span class="box"></span>
+      <span class="label${strike ? ' strike' : ''}">${label}</span>
+    </label>`;
+}
+
+// ───────────────────────── 每日待辦 ─────────────────────────
+function renderTodo() {
+  const today = todayIso();
+  const todos = [...state.todos].sort((a, b) => (a['日期'] || '').localeCompare(b['日期'] || ''));
+  const rows = todos.map(t => {
+    const overdue = !t['完成'] && (t['日期'] || '') < today;
+    return `
+      <div class="list-row${overdue ? ' danger-text' : ''}">
+        ${checkHtml({
+          checked: t['完成'], change: 'toggle-todo', data: { id: t.id }, strike: true,
+          label: `<span class="date-tag">${esc(friendlyDate(t['日期']))}${overdue ? '　已逾期' : ''}${t['日期'] === today ? '　今天' : ''}</span>${esc(t['內容'])}`,
+        })}
+        <button class="btn danger small" data-action="delete-todo" data-id="${esc(t.id)}">刪除</button>
+      </div>`;
+  }).join('');
+  return `
+    <section class="card">
+      <h2 class="card-title">📅 新增每日待辦</h2>
+      <label class="field-label">日期</label>
+      ${monthDayPickerHtml('todo', true)}
+      <label class="field-label" for="todo-input">待辦內容</label>
+      <div class="input-row">
+        <input id="todo-input" class="input" placeholder="例如：整理客戶的發票" enterkeyhint="done" data-enter="add-todo">
+        <button class="btn primary" data-action="add-todo">新增</button>
+      </div>
+    </section>
+    <h2 class="section-title">📋 待辦清單</h2>
+    ${rows || '<p class="empty">目前沒有待辦事項～</p>'}`;
+}
+
+// ───────────────────────── 客戶進度 ─────────────────────────
+function renderProgress() {
+  const company = selectedCompany();
+  if (!company) return companyPickerHtml();
+  const monthKey = currentMonthKey();
+  const tasks = company['月度待辦'] || [];
+  const progress = (company['月度進度'] || {})[monthKey] || {};
+  const taskHtml = tasks.length
+    ? tasks.map((task, i) => checkHtml({
+        checked: !!progress[task], change: 'toggle-monthly', data: { index: i }, label: esc(task), strike: true,
+      })).join('')
+    : '<p class="empty">這間公司還沒有設定月度待辦項目，按右上「管理項目」新增</p>';
+
+  const deadlines = [...(company['截止日期'] || [])].sort((a, b) => (a['日期'] || '').localeCompare(b['日期'] || ''));
+  const deadlineHtml = deadlines.length
+    ? deadlines.map(d => {
+        const due = parseIso(d['日期']);
+        const left = due ? daysFromToday(due) : null;
+        const soon = !d['完成'] && left !== null && left <= DEADLINE_WARNING_DAYS;
+        let when = '';
+        if (!d['完成'] && left !== null) {
+          when = left < 0 ? `　已逾期 ${-left} 天` : left === 0 ? '　今天到期' : left <= DEADLINE_WARNING_DAYS ? `　${left} 天後到期` : '';
+        }
+        return `
+          <div class="list-row${soon ? ' danger-text' : ''}">
+            ${checkHtml({
+              checked: d['完成'], change: 'toggle-deadline', data: { id: d.id }, strike: true,
+              label: `<span class="date-tag">${esc(friendlyDate(d['日期']))}${when}</span>${esc(d['標題'])}`,
+            })}
+            <button class="btn danger small" data-action="delete-deadline" data-id="${esc(d.id)}">刪除</button>
+          </div>`;
+      }).join('')
+    : '<p class="empty">目前沒有設定截止日期</p>';
+
+  const logs = company['催件紀錄'] || [];
+  const logHtml = logs.length
+    ? logs.map(log => `
+        <div class="log-row">
+          <div class="log-text"><span class="date-tag">${esc(log['時間'])}</span>${esc(log['內容'])}</div>
+          <button class="btn danger small" data-action="delete-log" data-id="${esc(log.id)}">刪除</button>
+        </div>`).join('')
+    : '<p class="empty">還沒有催件紀錄</p>';
+
+  return `
+    ${companyPickerHtml()}
+    <section class="card">
+      <h2 class="card-title">📋 本月待辦（${monthKey}）
+        <button class="btn small" data-action="manage-monthly">管理項目</button>
+      </h2>
+      ${taskHtml}
+    </section>
+    <section class="card">
+      <h2 class="card-title">⏰ 截止日期</h2>
+      ${monthDayPickerHtml('deadline', true)}
+      <div class="input-row" style="margin-top:8px">
+        <input id="deadline-input" class="input" placeholder="例如：營業稅申報" enterkeyhint="done" data-enter="add-deadline">
+        <button class="btn" data-action="add-deadline">新增</button>
+      </div>
+      <div style="margin-top:12px">${deadlineHtml}</div>
+    </section>
+    <section class="card">
+      <h2 class="card-title">💬 客戶聯絡/催件紀錄</h2>
+      <div class="input-row">
+        <input id="log-input" class="input" placeholder="例如：已催客戶補交發票" enterkeyhint="done" data-enter="add-log">
+        <button class="btn" data-action="add-log">新增</button>
+      </div>
+      <div style="margin-top:8px">${logHtml}</div>
+    </section>`;
+}
+
+// ───────────────────────── 產生文字 ─────────────────────────
+function currentGenOption() {
+  const company = selectedCompany();
+  const options = company?.['選項'] || [];
+  return ui.genIndex !== null && ui.genIndex < options.length ? options[ui.genIndex] : null;
+}
+
+// 照電腦版 _regenerate_gen_checklist_text / _regenerate_gen_pickup_text 的組字方式
+function buildOutput() {
+  const option = currentGenOption();
+  if (!option) return '';
+  const type = option['類型'] || 'fixed';
+  if (type === 'checklist') {
+    const intro = `${ui.greeting}，\n${state.settings['開頭本文'] || ''}`;
+    const checked = (option['項目'] || []).filter(item => ui.checks[item] !== false);
+    const listing = checked.map((item, i) => `${i + 1}. ${item}`).join('\n');
+    return listing ? `${intro}\n${listing}` : intro;
+  }
+  if (type === 'pickup') {
+    const company = selectedCompany() || {};
+    const { m, d } = ui.dates.pickup;
+    const dateText = `${pad(m)}/${pad(d)}`;
+    return (option['內容模板'] || '')
+      .replaceAll('{公司}', company['名稱'] || '')
+      .replaceAll('{地址}', company['取件地址'] || '')
+      .replaceAll('{日期}', dateText)
+      .replaceAll('{星期}', weekdayOf(m, d));
+  }
+  return option['內容'] || '';
+}
+
+function renderGenerate() {
+  const company = selectedCompany();
+  if (!company) return companyPickerHtml();
+  const options = company['選項'] || [];
+  const chips = options.length
+    ? `<div class="chips">${options.map((opt, i) => `
+        <button class="chip${i === ui.genIndex ? ' selected' : ''}" data-action="pick-option" data-index="${i}">
+          ${OPTION_TYPE_ICONS[opt['類型'] || 'fixed'] || '📄'} ${esc(opt['標題'])}
+        </button>`).join('')}</div>`
+    : '<p class="empty">這間公司還沒有回覆選項，到「管理」分頁新增 💝</p>';
+
+  const option = currentGenOption();
+  let highlight = '';
+  if (option && option['類型'] === 'checklist') {
+    highlight = `
+      <div class="highlight lavender">
+        <span class="field-label">開頭問候語</span>
+        <div class="segmented">
+          ${GREETING_OPTIONS.map(g => `<button class="${g === ui.greeting ? 'selected' : ''}" data-action="pick-greeting" data-value="${g}">${g}</button>`).join('')}
+        </div>
+        <span class="field-label">勾選要包含的項目</span>
+        ${(option['項目'] || []).map(item => checkHtml({
+          checked: ui.checks[item] !== false, change: 'toggle-check', data: { item }, label: esc(item),
+        })).join('')}
+      </div>`;
+  } else if (option && option['類型'] === 'pickup') {
+    highlight = `
+      <div class="highlight mint">
+        <span class="field-label">🚚 取件日期（會自動算出星期幾）</span>
+        ${monthDayPickerHtml('pickup', true)}
+      </div>`;
+  }
+
+  return `
+    ${companyPickerHtml()}
+    <p class="hint">① 選公司 🏢 → ② 點回覆選項 💌 → ③ 按複製貼給客戶 ✨</p>
+    <h2 class="section-title">💌 回覆選項</h2>
+    ${chips}
+    ${highlight}
+    ${option ? `
+      <h2 class="section-title pink">📝 訊息內容（可以先改再複製）</h2>
+      <div class="bubble-wrap">
+        <textarea id="output" class="bubble">${esc(ui.output)}</textarea>
+        <svg class="bubble-tail" viewBox="0 0 28 16" aria-hidden="true">
+          <polygon points="0,0 26,0 6,16" fill="#fff" stroke="#FFD6E6" stroke-width="2"/>
+          <line x1="1" y1="1" x2="25" y2="1" stroke="#fff" stroke-width="3"/>
+        </svg>
+      </div>` : ''}`;
+}
+
+async function copyOutput() {
+  const area = $('#output');
+  const text = area ? area.value : ui.output;
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch (e) {
+    // 舊版 iOS 或非 HTTPS 時的備用做法
+    area.select();
+    document.execCommand('copy');
+    area.blur();
+  }
+  toast('已複製好囉～💕 可以去 LINE 貼上了');
+}
+
+// ───────────────────────── 管理 ─────────────────────────
+function optionPreview(opt) {
+  if (opt['類型'] === 'checklist') return (opt['項目'] || []).map((item, i) => `${i + 1}. ${item}`).join('\n');
+  if (opt['類型'] === 'pickup') return opt['內容模板'] || '';
+  return opt['內容'] || '';
+}
+
+function renderManage() {
+  const company = selectedCompany();
+  let companySection = `
+    <section class="card">
+      <h2 class="card-title">🏢 公司</h2>
+      <button class="btn primary block" data-action="add-company">＋ 新增公司</button>
+    </section>`;
+  let optionSection = '';
+  if (company) {
+    companySection = `
+      ${companyPickerHtml()}
+      <div class="btn-row" style="margin-bottom:14px">
+        <button class="btn" data-action="add-company">＋ 新增公司</button>
+        <button class="btn" data-action="edit-company">✏️ 編輯</button>
+        <button class="btn danger" data-action="delete-company" data-confirm-text="確定刪除？">刪除</button>
+      </div>`;
+    const options = company['選項'] || [];
+    optionSection = `
+      <h2 class="section-title pink">💝 ${esc(companyLabel(company))} 的回覆選項</h2>
+      ${options.map((opt, i) => `
+        <div class="option-card">
+          <h3>${OPTION_TYPE_ICONS[opt['類型'] || 'fixed'] || '📄'} ${esc(opt['標題'])}</h3>
+          <span class="type-tag">${OPTION_TYPE_LABELS[opt['類型'] || 'fixed'] || ''}</span>
+          <div class="preview">${esc(optionPreview(opt))}</div>
+          <div class="btn-row">
+            <button class="btn small" data-action="edit-option" data-index="${i}">✏️ 編輯</button>
+            <button class="btn small danger" data-action="delete-option" data-index="${i}">🗑️ 刪除</button>
+          </div>
+        </div>`).join('') || '<p class="empty">還沒有回覆選項</p>'}
+      <section class="card">
+        <h2 class="card-title">＋ 新增回覆選項</h2>
+        <div class="btn-row" style="flex-direction:column">
+          <button class="btn" data-action="add-option" data-type="fixed">📄 固定文字</button>
+          <button class="btn" data-action="add-option" data-type="checklist">☑️ 可勾選清單</button>
+          <button class="btn" data-action="add-option" data-type="pickup">🚚 取件提醒</button>
+        </div>
+      </section>`;
+  }
+
+  return `
+    ${companySection}
+    ${optionSection}
+    <section class="card">
+      <h2 class="card-title">💬 可勾選清單的開頭本文</h2>
+      <p class="hint" style="margin:0 0 8px">所有公司共用，問候語在產生文字時選</p>
+      <textarea id="intro-input" class="textarea" style="min-height:80px">${esc(state.settings['開頭本文'] || '')}</textarea>
+      <button class="btn primary" style="margin-top:8px" data-action="save-intro">儲存開頭本文</button>
+    </section>
+    <section class="card">
+      <h2 class="card-title">☁️ 雲端同步</h2>
+      <p class="hint" style="margin:0 0 10px">手機和電腦版用同一份雲端資料，在哪邊改另一邊都會自動更新（大約 20 秒內）。「匯出資料」可以另外留一份備份。</p>
+      <div class="btn-row" style="flex-direction:column">
+        <button class="btn primary" data-action="sync-now">🔄 立即同步</button>
+        <button class="btn" data-action="export">📤 匯出資料（備份）</button>
+        <button class="btn ghost" data-action="change-key">🔑 重新輸入連線碼</button>
+      </div>
+    </section>`;
+}
+
+// ───────────────────────── 由下往上滑出的表單 ─────────────────────────
+function openSheet({ title, body, footer, tall = false, onMount }) {
+  closeSheet();
+  const root = $('#sheet-root');
+  root.innerHTML = `
+    <div class="sheet-overlay" data-sheet-overlay>
+      <div class="sheet${tall ? ' tall' : ''}" role="dialog" aria-label="${esc(title)}">
+        <div class="sheet-header"><h2>${esc(title)}</h2></div>
+        <div class="sheet-body">${body}</div>
+        ${footer ? `<div class="sheet-footer">${footer}</div>` : ''}
+      </div>
+    </div>`;
+  document.body.style.overflow = 'hidden';
+  const overlay = root.firstElementChild;
+  overlay.addEventListener('click', e => { if (e.target === overlay) closeSheet(); });
+  if (onMount) onMount(overlay);
+  return overlay;
+}
+
+function closeSheet() {
+  $('#sheet-root').innerHTML = '';
+  document.body.style.overflow = '';
+}
+
+const formFooter = '<button class="btn ghost" data-sheet-cancel>取消</button><button class="btn primary" data-sheet-save>儲存</button>';
+
+function bindFormButtons(overlay, onSave) {
+  overlay.querySelector('[data-sheet-cancel]').addEventListener('click', closeSheet);
+  overlay.querySelector('[data-sheet-save]').addEventListener('click', () => {
+    if (onSave() !== false) closeSheet();
+  });
+}
+
+function openCompanySheet() {
+  const listHtml = keyword => state.companies
+    .filter(c => !keyword || (c['名稱'] || '').includes(keyword) || (c['編號'] || '').includes(keyword))
+    .map(c => `
+      <button class="company-option${c.id === ui.companyId ? ' selected' : ''}" data-pick-company="${esc(c.id)}">
+        ${avatarHtml(c)}
+        <span><b>${esc(c['名稱'])}</b><span class="co-sub">${esc(c['編號'] || '')}${c['取件地址'] ? '　' + esc(c['取件地址']) : ''}</span></span>
+      </button>`).join('') || '<p class="empty">找不到符合的公司</p>';
+
+  openSheet({
+    title: '🏢 選一間公司',
+    tall: true,
+    body: `<input class="input" id="company-search" placeholder="🔍 搜尋公司名稱或編號" style="margin-bottom:10px"><div id="company-list">${listHtml('')}</div>`,
+    onMount(overlay) {
+      const list = overlay.querySelector('#company-list');
+      overlay.querySelector('#company-search').addEventListener('input', e => {
+        list.innerHTML = listHtml(e.target.value.trim());
+      });
+      list.addEventListener('click', e => {
+        const btn = e.target.closest('[data-pick-company]');
+        if (!btn) return;
+        if (ui.companyId !== btn.dataset.pickCompany) {
+          ui.companyId = btn.dataset.pickCompany;
+          ui.genIndex = null;
+          ui.output = '';
+        }
+        closeSheet();
+        render();
+        window.scrollTo(0, 0);
+      });
+    },
+  });
+}
+
+function openCompanyForm(existing) {
+  openSheet({
+    title: existing ? '編輯公司' : '新增公司',
+    footer: formFooter,
+    body: `
+      <label class="field-label" for="f-code">編號（可留空）</label>
+      <input id="f-code" class="input" value="${esc(existing?.['編號'] || '')}" inputmode="numeric">
+      <label class="field-label" for="f-name">公司名稱</label>
+      <input id="f-name" class="input" value="${esc(existing?.['名稱'] || '')}">
+      <label class="field-label" for="f-addr">取件地址（可留空，取件提醒的 {地址} 會用到）</label>
+      <input id="f-addr" class="input" value="${esc(existing?.['取件地址'] || '')}">`,
+    onMount(overlay) {
+      bindFormButtons(overlay, () => {
+        const code = $('#f-code').value.trim();
+        const name = $('#f-name').value.trim();
+        const address = $('#f-addr').value.trim();
+        if (!name) { toast('請輸入公司名稱'); return false; }
+        if (existing) {
+          Object.assign(existing, { '編號': code, '名稱': name, '取件地址': address });
+        } else {
+          const company = { id: uid(), '編號': code, '名稱': name, '取件地址': address, '選項': [] };
+          state.companies.push(company);
+          ui.companyId = company.id;
+          ui.genIndex = null;
+        }
+        save();
+        render();
+        toast('已儲存好囉～✨');
+      });
+    },
+  });
+}
+
+// 可勾選清單／月度待辦共用的「項目清單」編輯區
+function itemEditorHtml(placeholder) {
+  return `
+    <div id="item-list"></div>
+    <div class="input-row" style="margin-top:8px">
+      <input id="item-input" class="input" placeholder="${esc(placeholder)}" enterkeyhint="done">
+      <button class="btn" id="item-add">新增</button>
+    </div>`;
+}
+
+function bindItemEditor(overlay, items) {
+  const list = overlay.querySelector('#item-list');
+  const input = overlay.querySelector('#item-input');
+  const draw = () => {
+    list.innerHTML = items.length
+      ? items.map((item, i) => `
+          <div class="list-row">
+            <span class="label" style="flex:1;min-width:0;word-break:break-word">${i + 1}. ${esc(item)}</span>
+            <button class="btn small" data-move="${i}" ${i === 0 ? 'disabled style="opacity:.35"' : ''} aria-label="往上移">↑</button>
+            <button class="btn small danger" data-remove="${i}">刪除</button>
+          </div>`).join('')
+      : '<p class="empty">還沒有項目</p>';
+  };
+  const add = () => {
+    const value = input.value.trim();
+    if (!value) return;
+    if (items.includes(value)) { toast('這個項目已經存在囉'); return; }
+    items.push(value);
+    input.value = '';
+    draw();
+  };
+  overlay.querySelector('#item-add').addEventListener('click', add);
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); add(); } });
+  list.addEventListener('click', e => {
+    const remove = e.target.closest('[data-remove]');
+    const move = e.target.closest('[data-move]');
+    if (remove) items.splice(+remove.dataset.remove, 1);
+    if (move && +move.dataset.move > 0) {
+      const i = +move.dataset.move;
+      [items[i - 1], items[i]] = [items[i], items[i - 1]];
+    }
+    if (remove || move) draw();
+  });
+  draw();
+}
+
+function openOptionForm(company, type, index) {
+  const existing = index !== undefined ? company['選項'][index] : null;
+  const titleText = `${existing ? '編輯' : '新增'}${OPTION_TYPE_LABELS[type]}選項`;
+  const titleField = `
+    <label class="field-label" for="f-title">選項標題</label>
+    <input id="f-title" class="input" value="${esc(existing?.['標題'] || '')}" placeholder="例如：營業稅補件">`;
+  const commit = option => {
+    if (existing) company['選項'][index] = option;
+    else (company['選項'] = company['選項'] || []).push(option);
+    save();
+    render();
+    toast('已儲存好囉～✨');
+  };
+  const readTitle = () => {
+    const title = $('#f-title').value.trim();
+    if (!title) toast('請輸入選項標題');
+    return title;
+  };
+
+  if (type === 'checklist') {
+    const items = [...(existing?.['項目'] || [])];
+    openSheet({
+      title: titleText, tall: true, footer: formFooter,
+      body: `
+        ${titleField}
+        <label class="field-label">開頭本文（所有公司共用，僅供參考，到管理頁下方修改）</label>
+        <div class="notice" style="background:var(--lavender);white-space:pre-wrap">${esc(state.settings['開頭本文'] || '')}</div>
+        <label class="field-label">這間公司的可勾選項目</label>
+        ${itemEditorHtml('例如：電子發票媒體檔')}`,
+      onMount(overlay) {
+        bindItemEditor(overlay, items);
+        bindFormButtons(overlay, () => {
+          const title = readTitle();
+          if (!title) return false;
+          commit({ '標題': title, '類型': 'checklist', '項目': items });
+        });
+      },
+    });
+    return;
+  }
+
+  const isPickup = type === 'pickup';
+  const contentKey = isPickup ? '內容模板' : '內容';
+  openSheet({
+    title: titleText, tall: true, footer: formFooter,
+    body: `
+      ${titleField}
+      <label class="field-label" for="f-content">${isPickup ? '內容模板' : '內容'}</label>
+      <textarea id="f-content" class="textarea" style="min-height:200px">${esc(existing?.[contentKey] || '')}</textarea>
+      ${isPickup ? `
+        <p class="hint" style="margin:6px 0 0">點下面的按鈕可以插入變數：{地址} 是公司資料裡的取件地址，{星期} 會依產生文字時選的日期自動算出</p>
+        <div class="var-buttons">${PICKUP_VARS.map(v => `<button class="btn small" data-insert="${v}">${v}</button>`).join('')}</div>` : ''}`,
+    onMount(overlay) {
+      const area = overlay.querySelector('#f-content');
+      overlay.querySelectorAll('[data-insert]').forEach(btn => {
+        // 用 pointerdown + preventDefault，點按鈕時文字框才不會失去游標位置、鍵盤也不會收起來
+        btn.addEventListener('pointerdown', e => e.preventDefault());
+        btn.addEventListener('click', () => {
+          const start = area.selectionStart ?? area.value.length;
+          const end = area.selectionEnd ?? area.value.length;
+          area.setRangeText(btn.dataset.insert, start, end, 'end');
+          area.focus();
+        });
+      });
+      bindFormButtons(overlay, () => {
+        const title = readTitle();
+        if (!title) return false;
+        commit({ '標題': title, '類型': type, [contentKey]: area.value });
+      });
+    },
+  });
+}
+
+function openMonthlyTasksForm(company) {
+  const items = [...(company['月度待辦'] || [])];
+  openSheet({
+    title: `管理月度待辦項目－${companyLabel(company)}`,
+    tall: true,
+    footer: formFooter,
+    body: `<p class="hint" style="margin:0 0 10px">每個月都要做的事，進度會按月份分開記錄</p>${itemEditorHtml('例如：營業稅申報')}`,
+    onMount(overlay) {
+      bindItemEditor(overlay, items);
+      bindFormButtons(overlay, () => {
+        company['月度待辦'] = items;
+        save();
+        render();
+      });
+    },
+  });
+}
+
+function openReminderSheet(items) {
+  const section = (title, lines, color) => lines.length
+    ? `<div class="reminder-section"><h3 style="color:${color}">${title}</h3><ul>${lines.map(l => `<li>${esc(l)}</li>`).join('')}</ul></div>`
+    : '';
+  const deadlineText = d => {
+    const days = d['剩餘天數'];
+    const when = days < 0 ? `已逾期 ${-days} 天` : days === 0 ? '今天到期' : `${days} 天後到期`;
+    return `${d['公司']}－${d['標題']}（${when}）`;
+  };
+  openSheet({
+    title: '💗 今日提醒',
+    footer: '<button class="btn primary" data-sheet-cancel>知道了</button>',
+    body: section('📅 今日待辦', items.todos.map(t => t['內容'] || ''), 'var(--blue-text)')
+      + section('⏰ 即將到期的截止日期', items.deadlines.map(deadlineText), 'var(--danger-dark)')
+      + section('📋 本月還沒完成的事項', items.monthly.map(m => `${m['公司']}－${m['項目']}`), '#E5668E'),
+    onMount(overlay) {
+      overlay.querySelector('[data-sheet-cancel]').addEventListener('click', closeSheet);
+    },
+  });
+}
+
+function maybeShowReminder() {
+  const today = todayIso();
+  if (state.reminderShownDate === today) return;
+  const items = collectReminderItems();
+  if (items.todos.length || items.deadlines.length || items.monthly.length) openReminderSheet(items);
+  state.reminderShownDate = today;
+  saveLocal(); // 「今天跳過提醒了」是每支裝置自己的狀態，不用上傳
+}
+
+async function exportData() {
+  const files = [
+    ['companies.json', state.companies],
+    ['settings.json', state.settings],
+    ['daily_todos.json', state.todos],
+  ].map(([name, data]) => new File([JSON.stringify(data, null, 2)], name, { type: 'application/json' }));
+  if (navigator.canShare && navigator.canShare({ files })) {
+    try {
+      await navigator.share({ files, title: '記帳小幫手資料' });
+      return;
+    } catch (e) {
+      if (e.name === 'AbortError') return;
+    }
+  }
+  // 不支援分享檔案時，改成顯示文字讓她自己複製
+  openSheet({
+    title: '📤 匯出資料',
+    tall: true,
+    footer: '<button class="btn ghost" data-sheet-cancel>關閉</button><button class="btn primary" id="export-copy">複製</button>',
+    body: `<p class="hint" style="margin:0 0 8px">這是 companies.json 的內容，複製後傳到電腦存成檔案即可</p>
+      <textarea id="export-text" class="textarea" style="min-height:50vh;font-size:13px" readonly>${esc(JSON.stringify(state.companies, null, 2))}</textarea>`,
+    onMount(overlay) {
+      overlay.querySelector('[data-sheet-cancel]').addEventListener('click', closeSheet);
+      overlay.querySelector('#export-copy').addEventListener('click', async () => {
+        const area = overlay.querySelector('#export-text');
+        try { await navigator.clipboard.writeText(area.value); } catch (e) { area.select(); document.execCommand('copy'); }
+        toast('已複製 ✨');
+      });
+    },
+  });
+}
+
+// ───────────────────────── 事件 ─────────────────────────
+const actions = {
+  'open-company-sheet': openCompanySheet,
+
+  'add-todo'() {
+    const input = $('#todo-input');
+    const content = input.value.trim();
+    if (!content) { toast('請輸入待辦內容'); input.focus(); return; }
+    input.value = '';
+    state.todos.push({ id: uid(), '日期': pickedIso('todo'), '內容': content, '完成': false });
+    save();
+    render();
+    toast('已新增 ✨');
+  },
+  'delete-todo'(el) {
+    confirmTwice(el, `todo-${el.dataset.id}`, () => {
+      state.todos = state.todos.filter(t => t.id !== el.dataset.id);
+      save();
+      render();
+    });
+  },
+
+  'manage-monthly'() { openMonthlyTasksForm(selectedCompany()); },
+  'add-deadline'() {
+    const input = $('#deadline-input');
+    const title = input.value.trim();
+    if (!title) { toast('請輸入截止日期的標題'); input.focus(); return; }
+    const company = selectedCompany();
+    input.value = '';
+    (company['截止日期'] = company['截止日期'] || []).push({ id: uid(), '標題': title, '日期': pickedIso('deadline'), '完成': false });
+    save();
+    render();
+  },
+  'delete-deadline'(el) {
+    confirmTwice(el, `deadline-${el.dataset.id}`, () => {
+      const company = selectedCompany();
+      company['截止日期'] = (company['截止日期'] || []).filter(d => d.id !== el.dataset.id);
+      save();
+      render();
+    });
+  },
+  'add-log'() {
+    const input = $('#log-input');
+    const content = input.value.trim();
+    if (!content) { input.focus(); return; }
+    const company = selectedCompany();
+    const d = new Date();
+    const time = `${isoDate(d)} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    input.value = '';
+    (company['催件紀錄'] = company['催件紀錄'] || []).unshift({ id: uid(), '時間': time, '內容': content });
+    save();
+    render();
+  },
+  'delete-log'(el) {
+    confirmTwice(el, `log-${el.dataset.id}`, () => {
+      const company = selectedCompany();
+      company['催件紀錄'] = (company['催件紀錄'] || []).filter(l => l.id !== el.dataset.id);
+      save();
+      render();
+    });
+  },
+
+  'pick-option'(el) {
+    ui.genIndex = +el.dataset.index;
+    ui.checks = {};
+    ui.output = buildOutput();
+    render();
+  },
+  'pick-greeting'(el) {
+    ui.greeting = el.dataset.value;
+    ui.output = buildOutput();
+    render();
+  },
+  copy: copyOutput,
+
+  'add-company'() { openCompanyForm(null); },
+  'edit-company'() { openCompanyForm(selectedCompany()); },
+  'delete-company'(el) {
+    const company = selectedCompany();
+    confirmTwice(el, `company-${company.id}`, () => {
+      state.companies = state.companies.filter(c => c.id !== company.id);
+      ui.companyId = state.companies[0]?.id || null;
+      ui.genIndex = null;
+      save();
+      render();
+      toast(`已刪除「${company['名稱']}」`);
+    });
+  },
+  'add-option'(el) { openOptionForm(selectedCompany(), el.dataset.type); },
+  'edit-option'(el) {
+    const company = selectedCompany();
+    const index = +el.dataset.index;
+    openOptionForm(company, company['選項'][index]['類型'] || 'fixed', index);
+  },
+  'delete-option'(el) {
+    const company = selectedCompany();
+    const index = +el.dataset.index;
+    confirmTwice(el, `option-${company.id}-${index}`, () => {
+      company['選項'].splice(index, 1);
+      if (ui.genIndex !== null && ui.genIndex >= index) { ui.genIndex = null; ui.output = ''; }
+      save();
+      render();
+    });
+  },
+  'save-intro'() {
+    state.settings['開頭本文'] = $('#intro-input').value;
+    save();
+    toast('已儲存好囉～✨');
+  },
+  export: exportData,
+  async 'sync-now'() {
+    if (sync.pending) pushToCloud();
+    else await pullFromCloud();
+    toast(syncRun.status === 'offline' ? '連不上雲端，請檢查網路' : '已同步 ✨');
+  },
+  'change-key'(el) {
+    confirmTwice(el, 'change-key', () => {
+      ui.setup = true;
+      render();
+    });
+  },
+  'cancel-setup'() {
+    ui.setup = false;
+    render();
+  },
+  async 'connect'() {
+    const el = $('[data-action=connect]');
+    const input = $('#key-input');
+    const key = input.value.trim();
+    if (!key) { toast('請貼上連線碼'); return; }
+    el.disabled = true;
+    el.textContent = '連線中…';
+    try {
+      const result = await cloudRequest(undefined, key);
+      sync = { key, rev: 0, pending: false, offlineEdits: false, sent: [] };
+      ui.setup = false;
+      if (result.data) applyRemote(result);
+      else { saveLocal(); render(); }
+      toast('連線成功 💕');
+      maybeShowReminder();
+    } catch (e) {
+      el.disabled = false;
+      el.textContent = '連線';
+      toast(e.message === 'unauthorized' ? '連線碼不對，請再確認一次' : '連不上雲端，請檢查網路', 3000);
+    }
+  },
+};
+
+const changes = {
+  date(el) {
+    const slot = ui.dates[el.dataset.key];
+    slot[el.dataset.part] = +el.value;
+    // 跟電腦版 MonthDayPicker 一樣：換月份後日期超過該月天數就夾到月底
+    slot.d = Math.min(slot.d, daysInMonth(new Date().getFullYear(), slot.m));
+    // 只重畫這組下拉選單，不整頁重畫，旁邊輸入框已經打好的字才不會不見
+    const picker = el.closest('.md-picker');
+    picker.outerHTML = monthDayPickerHtml(el.dataset.key, !!picker.querySelector('.weekday'));
+    if (el.dataset.key === 'pickup') {
+      ui.output = buildOutput();
+      const area = $('#output');
+      if (area) area.value = ui.output;
+    }
+  },
+  'toggle-todo'(el) {
+    const todo = state.todos.find(t => t.id === el.dataset.id);
+    if (todo) todo['完成'] = el.checked;
+    save();
+    render();
+  },
+  'toggle-monthly'(el) {
+    const company = selectedCompany();
+    const task = (company['月度待辦'] || [])[+el.dataset.index];
+    const monthKey = currentMonthKey();
+    company['月度進度'] = company['月度進度'] || {};
+    company['月度進度'][monthKey] = company['月度進度'][monthKey] || {};
+    company['月度進度'][monthKey][task] = el.checked;
+    save();
+  },
+  'toggle-deadline'(el) {
+    const company = selectedCompany();
+    const deadline = (company['截止日期'] || []).find(d => d.id === el.dataset.id);
+    if (deadline) deadline['完成'] = el.checked;
+    save();
+    render();
+  },
+  'toggle-check'(el) {
+    ui.checks[el.dataset.item] = el.checked;
+    ui.output = buildOutput();
+    const area = $('#output');
+    if (area) area.value = ui.output;
+  },
+};
+
+document.addEventListener('click', e => {
+  const tabBtn = e.target.closest('[data-tab]');
+  if (tabBtn) {
+    if (ui.tab !== tabBtn.dataset.tab) {
+      ui.tab = tabBtn.dataset.tab;
+      render();
+      window.scrollTo(0, 0);
+    }
+    return;
+  }
+  const el = e.target.closest('[data-action]');
+  if (el && actions[el.dataset.action]) actions[el.dataset.action](el, e);
+});
+
+document.addEventListener('change', e => {
+  const el = e.target.closest('[data-change]');
+  if (el && changes[el.dataset.change]) changes[el.dataset.change](el, e);
+});
+
+document.addEventListener('input', e => {
+  if (e.target.id === 'output') ui.output = e.target.value;
+});
+
+document.addEventListener('keydown', e => {
+  const el = e.target.closest?.('[data-enter]');
+  if (el && e.key === 'Enter' && !e.isComposing) {
+    e.preventDefault();
+    actions[el.dataset.enter]?.(el, e);
+  }
+});
+
+// ───────────────────────── 繪製 ─────────────────────────
+const TAB_SUBTITLES = {
+  todo: '今天也辛苦了 ⭐',
+  progress: '看看每間公司的進度 📊',
+  generate: '挑一間公司開始吧 💌',
+  manage: '公司與回覆選項 ⚙️',
+};
+
+function renderSetup() {
+  return `
+    <section class="card">
+      <h2 class="card-title">🔑 第一次使用</h2>
+      <p style="margin:0 0 12px">請貼上連線碼，手機就會跟電腦版的資料連在一起。連線碼只要輸入一次，之後會記在這支手機裡。</p>
+      <input id="key-input" class="input" placeholder="貼上連線碼" autocomplete="off" autocapitalize="off" spellcheck="false" data-enter="connect">
+      <button class="btn primary block" style="margin-top:10px" data-action="connect">連線</button>
+      ${sync.key ? '<button class="btn ghost block" style="margin-top:8px" data-action="cancel-setup">取消</button>' : ''}
+    </section>`;
+}
+
+function render() {
+  const view = $('#view');
+  const renderers = { todo: renderTodo, progress: renderProgress, generate: renderGenerate, manage: renderManage };
+  // 整頁重畫時保留還沒送出的輸入框內容和游標所在的欄位（例如打到一半，雲端剛好同步進來）
+  const drafts = {};
+  view.querySelectorAll('input.input[id]').forEach(el => { drafts[el.id] = el.value; });
+  const focusedId = document.activeElement && view.contains(document.activeElement) ? document.activeElement.id : '';
+  if (focusedId === 'intro-input') drafts[focusedId] = document.activeElement.value;
+  const setup = !sync.key || ui.setup;
+  view.innerHTML = setup ? renderSetup() : renderers[ui.tab]();
+  document.querySelector('.tabbar').hidden = setup;
+  Object.entries(drafts).forEach(([id, value]) => {
+    const el = document.getElementById(id);
+    if (el) el.value = value;
+  });
+  if (focusedId) document.getElementById(focusedId)?.focus({ preventScroll: true });
+  const showCopy = !setup && ui.tab === 'generate' && currentGenOption();
+  view.classList.toggle('has-copybar', !!showCopy);
+  let bar = $('.copybar');
+  if (showCopy && !bar) {
+    bar = document.createElement('div');
+    bar.className = 'copybar';
+    bar.innerHTML = '<button class="btn primary" data-action="copy">💗 複製</button>';
+    document.body.appendChild(bar);
+  } else if (!showCopy && bar) {
+    bar.remove();
+  }
+  document.querySelectorAll('.tabbar [data-tab]').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.tab === ui.tab);
+  });
+  $('#topbar-sub').textContent = TAB_SUBTITLES[ui.tab];
+}
+
+$('#logo-heart').setAttribute('points', heartPoints(20, 21, 0.7));
+render();
+
+// 打開時先抓雲端最新資料再決定要不要跳今日提醒；之後每 20 秒、以及從背景切回來時再抓
+if (sync.key) {
+  setSyncStatus(sync.pending ? 'offline' : 'busy', sync.pending ? '⚠️ 稍後上傳' : '同步中…');
+  pullFromCloud().finally(() => setTimeout(maybeShowReminder, 300));
+}
+setInterval(() => { if (document.visibilityState === 'visible') pullFromCloud(); }, SYNC_POLL_MS);
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') pullFromCloud(3000);
+});
+window.addEventListener('online', () => pullFromCloud());
+window.addEventListener('pagehide', () => { syncRun.unloading = true; });
+window.addEventListener('pageshow', () => { syncRun.unloading = false; });
