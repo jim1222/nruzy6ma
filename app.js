@@ -180,9 +180,10 @@ function loadSync() {
       key: data.key || '', rev: data.rev || 0, pending: !!data.pending,
       offlineEdits: !!data.offlineEdits, sent: Array.isArray(data.sent) ? data.sent : [],
       name: data.name || '',
+      agreed: data.agreed || null,
     };
   } catch (e) {
-    return { key: '', rev: 0, pending: false, offlineEdits: false, sent: [], name: '' };
+    return { key: '', rev: 0, pending: false, offlineEdits: false, sent: [], name: '', agreed: null };
   }
 }
 
@@ -427,6 +428,8 @@ const ui = {
     pickup: { m: now.getMonth() + 1, d: now.getDate() },
   },
   cal: { y: now.getFullYear(), m: now.getMonth() + 1, day: isoDate(now) },
+  welcomeStep: 1,
+  agreeChecks: [false, false, false, false],
 };
 
 function pickedIso(key) {
@@ -895,6 +898,7 @@ function renderManage() {
         <button class="btn" data-action="export">📤 匯出資料（備份）</button>
         <button class="btn" data-action="change-name">👤 更改我的名字（目前：${esc(sync.name || UNNAMED)}）</button>
         <button class="btn ghost" data-action="change-key">🔑 重新輸入連線碼</button>
+        <button class="btn ghost" data-action="show-disclaimer">📜 使用須知與免責聲明</button>
       </div>
     </section>`;
 }
@@ -1163,7 +1167,7 @@ function openReminderSheet(items) {
 function maybeShowReminder() {
   const today = todayIso();
   // 還在輸入連線碼／名字的畫面時先不跳，設定好之後再跳
-  if (state.reminderShownDate === today || !sync.key || !sync.name) return;
+  if (state.reminderShownDate === today || !sync.key || !sync.name || !hasAgreed()) return;
   const items = collectReminderItems();
   if (items.todos.length || items.deadlines.length || items.monthly.length) openReminderSheet(items);
   state.reminderShownDate = today;
@@ -1373,27 +1377,50 @@ const actions = {
     maybeShowReminder();
   },
   async 'connect'() {
-    const el = $('[data-action=connect]');
-    const input = $('#key-input');
-    const key = input.value.trim();
+    const key = $('#key-input').value.trim();
     if (!key) { toast('請貼上連線碼'); return; }
     const name = readNameInput();
     if (!name) return;
-    el.disabled = true;
-    el.textContent = '連線中…';
-    try {
-      const result = await cloudRequest(undefined, key);
-      sync = { key, rev: 0, pending: false, offlineEdits: false, sent: [], name };
-      ui.setup = false;
-      if (result.data) applyRemote(result);
-      else { saveLocal(); render(); }
-      toast('連線成功 💕');
-      maybeShowReminder();
-    } catch (e) {
-      el.disabled = false;
-      el.textContent = '連線';
-      toast(e.message === 'unauthorized' ? '連線碼不對，請再確認一次' : '連不上雲端，請檢查網路', 3000);
+    if (await connectWithKey(key, name, $('[data-action=connect]'))) toast('連線成功 💕');
+  },
+
+  // ── 第一次開啟：介紹 → 使用須知與免責聲明 → 暱稱（＋連線碼）──
+  'welcome-go'(el) {
+    ui.welcomeStep = +el.dataset.step;
+    render();
+    window.scrollTo(0, 0);
+  },
+  'welcome-decline'() {
+    toast('需要同意使用須知，才能開始使用喔', 2600);
+  },
+  async 'welcome-finish'() {
+    const name = readNameInput();
+    if (!name) return;
+    const agreed = { version: DISCLAIMER_VERSION, time: nowText(), name };
+    if (!sync.key) {
+      const key = $('#key-input').value.trim();
+      if (!key) { toast('請貼上連線碼'); return; }
+      if (!(await connectWithKey(key, name, $('[data-action=welcome-finish]'), agreed))) return;
+    } else {
+      Object.assign(sync, { name, agreed });
+      saveLocal();
+      render();
     }
+    toast(`嗨 ${name}～歡迎使用小助手阿焙焙 🐹`, 2600);
+    maybeShowReminder();
+  },
+  'show-disclaimer'() {
+    const agreed = sync.agreed;
+    openSheet({
+      title: '📜 使用須知與免責聲明',
+      tall: true,
+      footer: '<button class="btn primary" data-sheet-cancel>關閉</button>',
+      body: `<div class="disclaimer">${esc(DISCLAIMER_TEXT)}</div>
+        ${agreed ? `<p class="hint" style="margin:12px 0 0">${esc(agreed.name)} 在 ${esc(agreed.time)} 同意了第 ${agreed.version} 版</p>` : ''}`,
+      onMount(overlay) {
+        overlay.querySelector('[data-sheet-cancel]').addEventListener('click', closeSheet);
+      },
+    });
   },
 };
 
@@ -1447,6 +1474,11 @@ const changes = {
     save();
     render();
   },
+  'agree-item'(el) {
+    ui.agreeChecks[+el.dataset.index] = el.checked;
+    // 不整頁重畫（聲明框捲到哪裡要留著），只更新同意鈕能不能按
+    $('[data-action=welcome-go][data-step="3"]').disabled = !ui.agreeChecks.every(Boolean);
+  },
   'toggle-check'(el) {
     ui.checks[el.dataset.item] = el.checked;
     ui.output = buildOutput();
@@ -1498,22 +1530,130 @@ const TAB_SUBTITLES = {
 function readNameInput() {
   const input = $('#name-input');
   const name = input.value.trim().slice(0, 12);
-  if (!name) { toast('請輸入你的名字'); input.focus(); }
+  if (!name) { toast('請輸入你的暱稱'); input.focus(); }
   return name;
+}
+
+// 用連線碼連上雲端；成功就記下連線碼、暱稱（agreed 有給就一起記同意紀錄），回傳 true
+async function connectWithKey(key, name, button, agreed = sync.agreed) {
+  const label = button.textContent;
+  button.disabled = true;
+  button.textContent = '連線中…';
+  try {
+    const result = await cloudRequest(undefined, key);
+    sync = { key, rev: 0, pending: false, offlineEdits: false, sent: [], name, agreed };
+    ui.setup = false;
+    if (result.data) applyRemote(result);
+    else { saveLocal(); render(); }
+    maybeShowReminder();
+    return true;
+  } catch (e) {
+    button.disabled = false;
+    button.textContent = label;
+    toast(e.message === 'unauthorized' ? '連線碼不對，請再確認一次' : '連不上雲端，請檢查網路', 3000);
+    return false;
+  }
+}
+
+function nowText() {
+  const d = new Date();
+  return `${isoDate(d)} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+// ───────────────────────── 第一次開啟：介紹＋免責聲明＋暱稱 ─────────────────────────
+// 文字跟電腦版 bookkeeping_reply_helper.py 的 WELCOME_INTRO／DISCLAIMER_TEXT／AGREE_ITEMS 一模一樣，改的時候兩邊一起改。
+// 聲明內容有大改時把版本號加 1，所有裝置都會再看到一次、重新同意。
+const DISCLAIMER_VERSION = 1;
+const WELCOME_INTRO = [
+  ['每日待辦', '記下今天要做的事，開機時提醒你'],
+  ['行事曆', '待辦和各公司的截止日期排在月曆上，過完的日子會蓋上焙子印章'],
+  ['客戶進度', '每間公司每個月的待辦、截止日期和催件紀錄'],
+  ['產生文字', '一鍵產生要傳給客戶的 LINE 訊息'],
+  ['手機、電腦自動同步', '在哪邊改，另一邊都會更新，誰改的也看得到'],
+];
+const DISCLAIMER_TEXT = `一、本程式的性質
+本程式「小助手阿焙焙」是協助整理記帳事務工作的輔助工具，所產生的訊息內容、待辦提醒及截止日期，僅供使用者參考，不構成會計、稅務或法律上的專業意見。
+
+二、使用者的確認責任
+稅務申報期限、應備文件及金額等資訊，請以財政部、國稅局等主管機關公告及委任合約為準。使用者在傳送訊息給客戶或辦理申報前，應自行確認內容正確。
+
+三、資料的儲存與同步
+為了在手機與電腦之間同步，資料會存放在使用者裝置上，以及本程式建置者設定的 Google 雲端硬碟中。連線碼等同於雲端資料的鑰匙，請勿提供給他人。
+
+四、個人資料保護
+程式中記錄的客戶資料可能包含個人資料。使用者應依《個人資料保護法》，在執行業務的必要範圍內蒐集、處理及利用這些資料，並妥善保管使用中的裝置。
+
+五、責任限制
+本程式以「現況」提供。因網路中斷、裝置故障、操作錯誤或其他不可預期的原因，造成資料遺失、提醒未送出、內容錯誤或延誤，本程式建置者不負損害賠償責任。建議定期使用「匯出資料」功能備份。
+
+六、條款更新
+本聲明更新時，程式會再次請你閱讀並同意。`;
+const AGREE_ITEMS = [
+  '我了解本程式是輔助工具，產生的訊息、提醒與截止日期需要自己再確認',
+  '我了解資料會存放在裝置與雲端以便同步，並會妥善保管連線碼',
+  '我會依《個人資料保護法》妥善使用客戶資料',
+  '我已閱讀並同意上述使用須知與免責聲明',
+];
+
+function hasAgreed() { return !!(sync.agreed && sync.agreed.version >= DISCLAIMER_VERSION); }
+
+function renderWelcome() {
+  const step = ui.welcomeStep;
+  const pills = ['歡迎', '使用須知', '設定暱稱']
+    .map((t, i) => `<span class="step-pill${i + 1 === step ? ' current' : ''}">${i + 1} ${t}</span>`).join('<span class="step-line">─</span>');
+  let body = '';
+  if (step === 1) {
+    body = `
+      <section class="card welcome-card">
+        <img class="welcome-avatar" src="art/avatar.png" alt="">
+        <h2 class="welcome-title">嗨～我是小助手阿焙焙</h2>
+        <p class="welcome-lead">我會陪你處理記帳事務所的日常工作：</p>
+        <ul class="welcome-list">${WELCOME_INTRO.map(([t, d]) => `<li><b>${t}</b>${d}</li>`).join('')}</ul>
+      </section>
+      <button class="btn primary block" data-action="welcome-go" data-step="2">下一步</button>`;
+  } else if (step === 2) {
+    const all = ui.agreeChecks.every(Boolean);
+    body = `
+      <section class="card">
+        <h2 class="card-title">📜 使用須知與免責聲明</h2>
+        <div class="disclaimer scroll">${esc(DISCLAIMER_TEXT)}</div>
+        <div class="agree-list">${AGREE_ITEMS.map((t, i) => checkHtml({
+          checked: ui.agreeChecks[i], change: 'agree-item', data: { index: i }, label: esc(t),
+        })).join('')}</div>
+      </section>
+      <button class="btn primary block" data-action="welcome-go" data-step="3"${all ? '' : ' disabled'}>我同意，下一步</button>
+      <div class="btn-row" style="margin-top:8px">
+        <button class="btn" data-action="welcome-go" data-step="1">上一步</button>
+        <button class="btn ghost" data-action="welcome-decline">不同意</button>
+      </div>`;
+  } else {
+    body = `
+      <section class="card">
+        <h2 class="card-title">👤 設定你的暱稱</h2>
+        ${nameFieldHtml('welcome-finish')}
+        ${sync.key ? '' : `
+          <label class="field-label" for="key-input" style="margin-top:14px">連線碼</label>
+          <input id="key-input" class="input" placeholder="貼上連線碼" autocomplete="off" autocapitalize="off" spellcheck="false">
+          <p class="hint" style="margin:6px 0 0">貼上之後，手機就會跟電腦版的資料連在一起。只要輸入一次，之後會記在這支手機裡。</p>`}
+      </section>
+      <button class="btn primary block" data-action="welcome-finish">開始使用</button>
+      <button class="btn block" style="margin-top:8px" data-action="welcome-go" data-step="2">上一步</button>`;
+  }
+  return `<div class="step-pills">${pills}</div>${body}`;
 }
 
 function nameFieldHtml(enter) {
   return `
-      <label class="field-label" for="name-input">你的名字</label>
+      <label class="field-label" for="name-input">你的暱稱</label>
       <input id="name-input" class="input" placeholder="例如：小美" value="${esc(sync.name)}" maxlength="12" data-enter="${enter}">
-      <p class="hint" style="margin:6px 0 0">改東西時會標記是誰改的，讓對方知道。你的手機和電腦用同一個名字就好</p>`;
+      <p class="hint" style="margin:6px 0 0">改東西時會標記是誰改的，讓對方知道。你的手機和電腦用同一個暱稱就好～</p>`;
 }
 
 function renderSetup() {
   if (sync.key && !ui.setup) {
     return `
     <section class="card">
-      <h2 class="card-title">👤 設定你的名字</h2>
+      <h2 class="card-title">👤 設定你的暱稱</h2>
       ${nameFieldHtml('save-name')}
       <button class="btn primary block" style="margin-top:12px" data-action="save-name">儲存</button>
       ${sync.name ? '<button class="btn ghost block" style="margin-top:8px" data-action="cancel-setup">取消</button>' : ''}
@@ -1538,8 +1678,10 @@ function render() {
   view.querySelectorAll('input.input[id]').forEach(el => { drafts[el.id] = el.value; });
   const focusedId = document.activeElement && view.contains(document.activeElement) ? document.activeElement.id : '';
   if (focusedId === 'intro-input') drafts[focusedId] = document.activeElement.value;
-  const setup = !sync.key || ui.setup || ui.nameSetup || !sync.name;
-  view.innerHTML = setup ? renderSetup() : renderers[ui.tab]();
+  // 第一次開啟（或聲明改版）先跑歡迎流程；同意過但還沒連線碼／暱稱，才是原本的設定畫面
+  const welcome = !hasAgreed();
+  const setup = welcome || !sync.key || ui.setup || ui.nameSetup || !sync.name;
+  view.innerHTML = welcome ? renderWelcome() : setup ? renderSetup() : renderers[ui.tab]();
   document.querySelector('.tabbar').hidden = setup;
   Object.entries(drafts).forEach(([id, value]) => {
     const el = document.getElementById(id);
