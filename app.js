@@ -50,8 +50,23 @@ function daysFromToday(date) {
   return Math.round((b - a) / 86400000);
 }
 
+// 日期下拉只選月／日、沒有年：一律落在「今天往前 60 天～往後 305 天」這一年內。10 月選 1 月 15 日＝明年，
+// 3 月選 12 月 25 日＝今年，1 月初選 12 月 28 日＝去年，10 月選 9 月 30 日還是今年（照樣算逾期）。
+// 以前一律當今年，年底設明年初的截止日期會一新增就變成「已逾期 286 天」。日超過那個月的天數就用月底。
+// 跟電腦版 resolve_month_day 一樣
+function resolveMonthDay(month, day, today = new Date()) {
+  const base = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  const make = year => new Date(year, month - 1, Math.min(day, daysInMonth(year, month)));
+  const target = make(base.getFullYear());
+  const gap = Math.round((base - target) / 86400000);
+  // 截止日期、待辦幾乎都是往後的事，所以只往回認 60 天：早超過 60 天＝明年，
+  // 晚超過 305 天（一年減 60 天）＝去年（1 月初選 12 月 28 日是上禮拜，不是快一年後）
+  if (gap > 60 || gap < -305) return make(base.getFullYear() + (gap > 0 ? 1 : -1));
+  return target;
+}
+
 function weekdayOf(month, day) {
-  return WEEKDAY_CHARS[new Date(new Date().getFullYear(), month - 1, day).getDay()];
+  return WEEKDAY_CHARS[resolveMonthDay(month, day).getDay()];
 }
 
 // 「2026-10-22」→「10/22（四）」，手機上比 ISO 格式好讀
@@ -441,7 +456,7 @@ const ui = {
 
 function pickedIso(key) {
   const { m, d } = ui.dates[key];
-  return `${new Date().getFullYear()}-${pad(m)}-${pad(d)}`;
+  return isoDate(resolveMonthDay(m, d));
 }
 
 function selectedCompany() {
@@ -546,7 +561,7 @@ function companyPickerHtml() {
 
 function monthDayPickerHtml(key, showWeekday = false) {
   const { m, d } = ui.dates[key];
-  const dim = daysInMonth(new Date().getFullYear(), m);
+  const dim = daysInMonth(resolveMonthDay(m, 1).getFullYear(), m);
   const months = Array.from({ length: 12 }, (_, i) => i + 1)
     .map(v => `<option value="${v}"${v === m ? ' selected' : ''}>${v}</option>`).join('');
   const days = Array.from({ length: dim }, (_, i) => i + 1)
@@ -1878,7 +1893,7 @@ const changes = {
     const slot = ui.dates[el.dataset.key];
     slot[el.dataset.part] = +el.value;
     // 跟電腦版 MonthDayPicker 一樣：換月份後日期超過該月天數就夾到月底
-    slot.d = Math.min(slot.d, daysInMonth(new Date().getFullYear(), slot.m));
+    slot.d = Math.min(slot.d, daysInMonth(resolveMonthDay(slot.m, 1).getFullYear(), slot.m));
     // 只重畫這組下拉選單，不整頁重畫，旁邊輸入框已經打好的字才不會不見
     const picker = el.closest('.md-picker');
     picker.outerHTML = monthDayPickerHtml(el.dataset.key, !!picker.querySelector('.weekday'));
