@@ -503,6 +503,8 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .cal-legend span { white-space: nowrap; display: inline-flex; align-items: center; gap: 4px; }
 .cal-legend .dot { margin-left: 0; }
 .cal-cell > span:first-of-type { text-shadow: 0 0 3px #fff, 0 0 3px #fff, 0 0 2px #fff; }
+.cal-cell.holiday > span:first-of-type { color: var(--danger-dark); }
+.cal-cell.other.holiday > span:first-of-type { opacity: .55; }
 
 /* ── 焙子（家裡的倉鼠）── */
 /* 背景很淡的小腳印（兩組錯開，比較不像格子） */

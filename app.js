@@ -735,12 +735,48 @@ function stampHtml(iso) {
   return `<img class="stamp" src="art/stamp.png" alt="" style="transform: rotate(${-angle}deg)">`;
 }
 
+// 假日的日期數字標紅：放假日（含國定假日、補假、春節連假，補班的星期六不算）來自人事行政總處
+// 行事曆整理成的公開資料，跟電腦版同一份。只存在這支手機、不跟雲端同步；那一年還抓不到
+// （離線或還沒公布）就先只標星期六、日
+const HOLIDAY_URL = y => `https://cdn.jsdelivr.net/gh/ruyut/TaiwanCalendar/data/${y}.json`;
+const HOLIDAY_KEY = 'bookkeeping-helper-holidays';
+const holidays = (() => {
+  try { return JSON.parse(localStorage.getItem(HOLIDAY_KEY) || '{}'); } catch (e) { return {}; }
+})();
+const holidayFetched = new Set();
+
+function isHoliday(d) {
+  const days = holidays[d.getFullYear()];
+  return days ? days.includes(isoDate(d)) : d.getDay() === 0 || d.getDay() === 6;
+}
+
+async function loadHolidays(year) {
+  if (holidays[year] || holidayFetched.has(year)) return;
+  holidayFetched.add(year);
+  try {
+    const resp = await fetch(HOLIDAY_URL(year));
+    if (!resp.ok) return;
+    holidays[year] = (await resp.json())
+      .filter(x => x.isHoliday)
+      .map(x => `${x.date.slice(0, 4)}-${x.date.slice(4, 6)}-${x.date.slice(6, 8)}`);
+    try { localStorage.setItem(HOLIDAY_KEY, JSON.stringify(holidays)); } catch (e) { /* 存不了下次再抓 */ }
+  } catch (e) {
+    return;
+  }
+  // 只換格子的 class，不整頁重畫，正在打字的待辦才不會被清掉
+  document.querySelectorAll('.cal-cell[data-date]').forEach(cell => {
+    cell.classList.toggle('holiday', isHoliday(parseIso(cell.dataset.date)));
+  });
+}
+
 function renderCalendar() {
   const { y, m, day } = ui.cal;
   const items = calendarItemsByDate();
   const today = todayIso();
   const first = new Date(y, m - 1, 1);
-  const cells = Array.from({ length: 42 }, (_, i) => new Date(y, m - 1, 1 - first.getDay() + i)).map(d => {
+  const days = Array.from({ length: 42 }, (_, i) => new Date(y, m - 1, 1 - first.getDay() + i));
+  new Set(days.map(d => d.getFullYear())).forEach(loadHolidays);
+  const cells = days.map(d => {
     const iso = isoDate(d);
     const dayItems = items[iso] || { todos: [], deadlines: [] };
     const entries = [
@@ -748,7 +784,7 @@ function renderCalendar() {
       ...dayItems.deadlines.map(({ d: dl }) => ({ done: dl['完成'], urgent: isUrgent(iso, dl['完成'], true), kind: 'deadline' })),
     ];
     const dots = entries.slice(0, 4).map(e => `<i class="dot ${e.done ? 'done' : e.urgent ? 'urgent' : e.kind}"></i>`).join('');
-    const cls = [d.getMonth() + 1 !== m && 'other', iso === today && 'today', iso === day && 'selected'].filter(Boolean).join(' ');
+    const cls = [d.getMonth() + 1 !== m && 'other', isHoliday(d) && 'holiday', iso === today && 'today', iso === day && 'selected'].filter(Boolean).join(' ');
     const stamp = iso < today ? stampHtml(iso) : '';
     return `<button class="cal-cell ${cls}" data-action="cal-pick" data-date="${iso}">${stamp}<span>${d.getDate()}</span><span class="dots">${dots}</span></button>`;
   }).join('');
