@@ -589,7 +589,9 @@ function checkHtml({ checked, change, data = {}, label, strike = false }) {
 // 所有公司一次看。規則跟電腦版 company_overview／overview_rows 一樣，改的時候兩邊一起改
 const NO_CONTACT_DAY_CHOICES = [3, 7, 10, 14, 21, 30, 60];
 const DEFAULT_NO_CONTACT_DAYS = 14;
-const OVERVIEW_FILTERS = ['全部', '本月還沒做完', '快到期', '很久沒聯絡'];
+// 「有截止日期」以前叫「快到期」、只列 3 天內到期的；她設了 11 月的截止日期，總覽卻寫「最近沒有要到期的」、
+// 點進去「這一類目前沒有公司」，看起來像沒存到。現在列出所有還有沒完成截止日期的公司，最近的排前面（跟電腦版一樣）
+const OVERVIEW_FILTERS = ['全部', '本月還沒做完', '有截止日期', '很久沒聯絡'];
 
 function noContactDays() {
   const days = parseInt(state.settings['沒聯絡提醒天數'], 10);
@@ -612,7 +614,7 @@ function companyOverview(company, noContact = noContactDays()) {
   const since = sinces.length ? Math.min(...sinces) : null;
   return {
     company, done, total: tasks.length,
-    next: upcoming[0]?.d || null, left: upcoming.length ? upcoming[0].left : null, urgentCount,
+    next: upcoming[0]?.d || null, left: upcoming.length ? upcoming[0].left : null, urgentCount, pendingCount: upcoming.length,
     since,
     urgent: urgentCount > 0,
     stale: since !== null && since > noContact,
@@ -647,10 +649,16 @@ function renderOverview() {
   const withTasks = rows.filter(r => r.total);
   const allDone = withTasks.filter(r => r.done === r.total).length;
   const urgent = rows.reduce((n, r) => n + r.urgentCount, 0);
+  const pending = rows.reduce((n, r) => n + r.pendingCount, 0);
+  const nearest = rows.filter(r => r.next).sort((a, b) => a.left - b.left)[0];
+  const deadlineText = urgent ? `${urgent} 件逾期或 ${DEADLINE_WARNING_DAYS} 天內到期（共 ${pending} 件）`
+    : pending ? `共 ${pending} 件，最近 ${esc(shortDate(nearest.next['日期']))}（${deadlineLeftText(nearest.left)}）`
+    : '還沒有設定截止日期';
   const stale = rows.filter(r => r.stale).length;
   const filter = ui.overviewFilter || '全部';
-  const key = { '本月還沒做完': 'undone', '快到期': 'urgent', '很久沒聯絡': 'stale' }[filter];
-  const shown = key ? rows.filter(r => r[key]) : rows;
+  const key = { '本月還沒做完': 'undone', '很久沒聯絡': 'stale' }[filter];
+  const shown = filter === '有截止日期' ? rows.filter(r => r.next).sort((a, b) => a.left - b.left)
+    : key ? rows.filter(r => r[key]) : rows;
 
   const summary = (f, title, value, cls) => `
     <button class="ov-sum ${cls}${filter === f ? ' on' : ''}" data-action="overview-filter" data-filter="${f}">
@@ -684,7 +692,7 @@ function renderOverview() {
   return `
     <div class="ov-sums">
       ${summary('本月還沒做完', '📋 本月待辦', withTasks.length ? `已完成 ${allDone}／${withTasks.length} 家` : '還沒設定項目', '')}
-      ${summary('快到期', '⏰ 截止日期', urgent ? `${urgent} 件逾期或 ${DEADLINE_WARNING_DAYS} 天內到期` : '最近沒有要到期的 👍', urgent ? 'danger' : '')}
+      ${summary('有截止日期', '⏰ 截止日期', deadlineText, urgent ? 'danger' : '')}
       ${summary('很久沒聯絡', '💬 很久沒聯絡', stale ? `${stale} 家超過 ${days} 天` : '都有聯絡 👍', stale ? 'stale' : '')}
     </div>
     <div class="ov-tools">
