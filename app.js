@@ -397,7 +397,7 @@ function findCompany(id) { return state.companies.find(c => c.id === id) || null
 function collectReminderItems() {
   const today = todayIso();
   const monthKey = currentMonthKey();
-  const todos = state.todos.filter(t => !t['完成'] && t['日期'] === today);
+  const todos = state.todos.filter(t => !t['完成'] && t['日期'] === today).sort(compareTodos);
   const deadlines = [];
   const monthly = [];
   for (const company of state.companies) {
@@ -683,17 +683,85 @@ function renderOverview() {
     ${shown.length ? cards : emptyArtHtml(empty)}`;
 }
 
+// 待辦的時間區間（可不填）：'開始時間'、'結束時間' 都是 HH:MM，跟電腦版一樣。舊版不認得這兩個欄位，
+// 但待辦物件是原地修改，舊版存檔也會原樣留著
+const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+function todoTimeText(t) {
+  const start = t['開始時間'] || '';
+  if (!TIME_RE.test(start)) return '';
+  return TIME_RE.test(t['結束時間'] || '') ? `${start}~${t['結束時間']}` : start;
+}
+// 同一天裡沒時間的排最前面，其他照開始時間
+function compareTodos(a, b) {
+  return (a['日期'] || '').localeCompare(b['日期'] || '') || (a['開始時間'] || '').localeCompare(b['開始時間'] || '');
+}
+
+function timeRangeHtml(prefix, start = '', end = '') {
+  return `
+    <div class="time-range">
+      <input id="${prefix}-start" class="input" type="time" value="${esc(start)}" aria-label="開始時間">
+      <span>~</span>
+      <input id="${prefix}-end" class="input" type="time" value="${esc(end)}" aria-label="結束時間">
+      <button class="btn small ghost" type="button" data-action="clear-time" data-prefix="${prefix}">清除</button>
+    </div>`;
+}
+
+// 讀時間欄位並檢查，不對就提示並回傳 null
+function readTimeRange(prefix) {
+  const start = $(`#${prefix}-start`).value;
+  const end = $(`#${prefix}-end`).value;
+  if ((start && !TIME_RE.test(start)) || (end && !TIME_RE.test(end))) { toast('時間格式不對，請重新選'); return null; }
+  if (end && !start) { toast('有結束時間的話，也要選開始時間'); return null; }
+  if (end && end < start) { toast('結束時間不能比開始時間早'); return null; }
+  return { '開始時間': start, '結束時間': end };
+}
+
+function todoLabelHtml(t, extra = '') {
+  const time = todoTimeText(t);
+  return `<span class="date-tag">${esc(friendlyDate(t['日期']))}${time ? `　${time}` : ''}${extra}</span>${esc(t['內容'])}`;
+}
+
+function openTodoForm(todo) {
+  openSheet({
+    title: '編輯待辦',
+    footer: formFooter,
+    body: `
+      <label class="field-label" for="tf-date">日期</label>
+      <input id="tf-date" class="input" type="date" value="${esc(todo['日期'] || '')}">
+      <label class="field-label">時間（可不填）</label>
+      ${timeRangeHtml('tf', todo['開始時間'] || '', todo['結束時間'] || '')}
+      <label class="field-label" for="tf-content">待辦內容</label>
+      <input id="tf-content" class="input" value="${esc(todo['內容'] || '')}">`,
+    onMount(overlay) {
+      bindFormButtons(overlay, () => {
+        const date = $('#tf-date').value;
+        const content = $('#tf-content').value.trim();
+        const time = readTimeRange('tf');
+        if (!parseIso(date)) { toast('請選日期'); return false; }
+        if (!content) { toast('請輸入待辦內容'); return false; }
+        if (!time) return false;
+        // 表單開著時雲端資料不會換掉（見 applyRemote），todo 還是清單裡那一筆
+        Object.assign(todo, { '日期': date, '內容': content, ...time, '修改標記': newMark() });
+        save();
+        render();
+        toast('已儲存好囉～吱吱 🐹');
+      });
+    },
+  });
+}
+
 function renderTodo() {
   const today = todayIso();
-  const todos = [...state.todos].sort((a, b) => (a['日期'] || '').localeCompare(b['日期'] || ''));
+  const todos = [...state.todos].sort(compareTodos);
   const rows = todos.map(t => {
     const overdue = !t['完成'] && (t['日期'] || '') < today;
     return `
       <div class="list-row${overdue ? ' danger-text' : ''}">
         ${checkHtml({
           checked: t['完成'], change: 'toggle-todo', data: { id: t.id }, strike: true,
-          label: `<span class="date-tag">${esc(friendlyDate(t['日期']))}${overdue ? '　已逾期' : ''}${t['日期'] === today ? '　今天' : ''}</span>${esc(t['內容'])}`,
+          label: todoLabelHtml(t, `${overdue ? '　已逾期' : ''}${t['日期'] === today ? '　今天' : ''}`),
         })}
+        <button class="btn small" data-action="edit-todo" data-id="${esc(t.id)}">編輯</button>
         <button class="btn danger small" data-action="delete-todo" data-id="${esc(t.id)}">刪除</button>
         ${markHtml(t['修改標記'], `todo:${t.id}`)}
       </div>`;
@@ -703,6 +771,8 @@ function renderTodo() {
       <h2 class="card-title">📅 新增每日待辦</h2>
       <label class="field-label">日期</label>
       ${monthDayPickerHtml('todo', true)}
+      <label class="field-label">時間（可不填）</label>
+      ${timeRangeHtml('todo')}
       <label class="field-label" for="todo-input">待辦內容</label>
       <div class="input-row">
         <input id="todo-input" class="input" placeholder="例如：整理客戶的發票" enterkeyhint="done" data-enter="add-todo">
@@ -798,9 +868,13 @@ function renderCalendar() {
   }).join('');
 
   const dayItems = items[day] || { todos: [], deadlines: [], logs: [] };
-  const todoHtml = dayItems.todos.map(t => `
+  const todoHtml = [...dayItems.todos].sort(compareTodos).map(t => `
       <div class="list-row${isUrgent(day, t['完成'], false) ? ' danger-text' : ''}">
-        ${checkHtml({ checked: t['完成'], change: 'toggle-todo', data: { id: t.id }, label: esc(t['內容']), strike: true })}
+        ${checkHtml({
+          checked: t['完成'], change: 'toggle-todo', data: { id: t.id }, strike: true,
+          label: `${todoTimeText(t) ? `<span class="date-tag">${todoTimeText(t)}</span>` : ''}${esc(t['內容'])}`,
+        })}
+        <button class="btn small" data-action="edit-todo" data-id="${esc(t.id)}">編輯</button>
         <button class="btn danger small" data-action="delete-todo" data-id="${esc(t.id)}">刪除</button>
         ${markHtml(t['修改標記'], `todo:${t.id}`)}
       </div>`).join('');
@@ -1068,8 +1142,11 @@ function renderManage() {
     const options = company['選項'] || [];
     optionSection = `
       <h2 class="section-title pink">💝 ${esc(companyLabel(company))} 的回覆選項</h2>
+      ${options.length > 1 ? '<p class="hint">按住右邊的 ☰ 上下拖，可以調整選項的順序</p>' : ''}
+      <div class="option-list">
       ${options.map((opt, i) => `
         <div class="option-card">
+          <span class="drag-handle" data-drag-index="${i}" role="button" aria-label="拖曳調整順序">☰</span>
           <h3>${OPTION_TYPE_ICONS[opt['類型'] || 'fixed'] || '📄'} ${esc(opt['標題'])}</h3>
           <span class="type-tag">${OPTION_TYPE_LABELS[opt['類型'] || 'fixed'] || ''}</span>
           <div class="preview">${esc(optionPreview(opt))}</div>
@@ -1079,6 +1156,7 @@ function renderManage() {
             <button class="btn small danger" data-action="delete-option" data-index="${i}">🗑️ 刪除</button>
           </div>
         </div>`).join('') || '<p class="empty">還沒有回覆選項</p>'}
+      </div>
       <section class="card">
         <h2 class="card-title">＋ 新增回覆選項</h2>
         <div class="btn-row" style="flex-direction:column">
@@ -1372,7 +1450,7 @@ function openReminderSheet(items) {
     title: '🐹 焙子的今日提醒',
     footer: '<button class="btn primary" data-sheet-cancel>知道了</button>',
     body: `<div class="reminder-art">${$('.logo').outerHTML}<b>焙子陪你一起加油～ 🌻</b></div>`
-      + section('📅 今日待辦', items.todos.map(t => t['內容'] || ''), 'var(--blue-text)')
+      + section('📅 今日待辦', items.todos.map(t => [todoTimeText(t), t['內容'] || ''].filter(Boolean).join('　')), 'var(--blue-text)')
       + section('⏰ 即將到期的截止日期', items.deadlines.map(deadlineText), 'var(--danger-dark)')
       + section('📋 本月還沒完成的事項', items.monthly.map(m => `${m['公司']}－${m['項目']}`), '#E5668E'),
     onMount(overlay) {
@@ -1435,11 +1513,23 @@ const actions = {
     const input = $('#todo-input');
     const content = input.value.trim();
     if (!content) { toast('請輸入待辦內容'); input.focus(); return; }
+    const time = readTimeRange('todo');
+    if (!time) return;
     input.value = '';
-    state.todos.push({ id: uid(), '日期': pickedIso('todo'), '內容': content, '完成': false, '修改標記': newMark('新增') });
+    $('#todo-start').value = '';
+    $('#todo-end').value = '';
+    state.todos.push({ id: uid(), '日期': pickedIso('todo'), '內容': content, ...time, '完成': false, '修改標記': newMark('新增') });
     save();
     render();
     toast('已新增～吱吱 🐹');
+  },
+  'edit-todo'(el) {
+    const todo = state.todos.find(t => t.id === el.dataset.id);
+    if (todo) openTodoForm(todo);
+  },
+  'clear-time'(el) {
+    $(`#${el.dataset.prefix}-start`).value = '';
+    $(`#${el.dataset.prefix}-end`).value = '';
   },
   'delete-todo'(el) {
     confirmTwice(el, `todo-${el.dataset.id}`, () => {
@@ -1772,6 +1862,66 @@ document.addEventListener('keydown', e => {
     actions[el.dataset.enter]?.(el, e);
   }
 });
+
+// ───────────────────────── 回覆選項拖曳排序 ─────────────────────────
+// 按住卡片上的 ☰ 把手拖，卡片跟著手指在清單裡移動，放開才真的改順序並存檔（跟電腦版一樣）。
+// 只有把手能拖（touch-action:none 只設在把手上），卡片其他地方照常捲動、點按鈕
+let optionDrag = null;
+
+function moveOption(company, from, to) {
+  const options = company['選項'];
+  const genOption = ui.genIndex !== null ? options[ui.genIndex] : null;
+  const [moved] = options.splice(from, 1);
+  options.splice(to, 0, moved);
+  // 產生文字頁選著的選項跟著換位置，不然會變成選到別的
+  if (genOption) ui.genIndex = options.indexOf(genOption);
+  company['修改標記'] = newMark('調整選項順序');
+  save();
+  render();
+}
+
+document.addEventListener('pointerdown', e => {
+  const handle = e.target.closest?.('.drag-handle');
+  if (!handle) return;
+  e.preventDefault();
+  // 上一次拖曳如果沒收到放開（被系統打斷），這裡先清掉，不然之後都拖不動
+  optionDrag?.card.classList.remove('dragging');
+  const card = handle.closest('.option-card');
+  card.classList.add('dragging');
+  // 公司在按下去的時候就記住，放開時才不會改到別間
+  optionDrag = { card, from: +handle.dataset.dragIndex, pointerId: e.pointerId, company: selectedCompany() };
+});
+
+document.addEventListener('pointermove', e => {
+  if (!optionDrag || e.pointerId !== optionDrag.pointerId) return;
+  e.preventDefault();
+  const { card } = optionDrag;
+  const list = card.parentElement;
+  // 插到「中線在手指下方」的第一張卡片前面；都沒有就放最後
+  const before = [...list.querySelectorAll('.option-card:not(.dragging)')]
+    .find(c => { const r = c.getBoundingClientRect(); return e.clientY < r.top + r.height / 2; });
+  if (before) {
+    if (card.nextElementSibling !== before) list.insertBefore(card, before);
+  } else if (list.lastElementChild !== card) {
+    list.appendChild(card);
+  }
+  // 拖到畫面上下緣自動捲動，選項多的時候才拖得到最上面或最下面
+  if (e.clientY < 90) window.scrollBy(0, -12);
+  else if (e.clientY > window.innerHeight - 150) window.scrollBy(0, 12);
+});
+
+function endOptionDrag(e) {
+  if (!optionDrag || e.pointerId !== optionDrag.pointerId) return;
+  const { card, from, company } = optionDrag;
+  optionDrag = null;
+  card.classList.remove('dragging');
+  const to = [...card.parentElement.querySelectorAll('.option-card')].indexOf(card);
+  // 被系統中斷（來電、切 App）或放回原位就不改，重畫回原本的順序
+  if (e.type === 'pointercancel' || to === from || !company?.['選項']?.[from]) { render(); return; }
+  moveOption(company, from, to);
+}
+document.addEventListener('pointerup', endOptionDrag);
+document.addEventListener('pointercancel', endOptionDrag);
 
 // ───────────────────────── 繪製 ─────────────────────────
 const TAB_SUBTITLES = {
