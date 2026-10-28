@@ -990,18 +990,44 @@ function renderGenerate() {
       </div>` : ''}`;
 }
 
+// 先用 Clipboard API；不能用（LINE 內建瀏覽器、舊版 iOS）或被擋下時，改用畫面外的暫時文字框
+// 選取後複製。iOS 的 select() 選不到字，要再 setSelectionRange；設 readonly 才不會跳鍵盤。
+// 回傳有沒有真的複製到，複製失敗不能跟她說「已複製」，不然她貼到 LINE 才發現是舊的內容
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch (e) { /* 改用備用做法 */ }
+  const tmp = document.createElement('textarea');
+  tmp.value = text;
+  tmp.setAttribute('readonly', '');
+  // 字級 12pt 以上 iOS 才不會自動放大畫面
+  tmp.style.cssText = 'position:fixed;top:0;left:-9999px;font-size:12pt';
+  document.body.appendChild(tmp);
+  tmp.select();
+  tmp.setSelectionRange(0, text.length);
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+  tmp.remove();
+  return ok;
+}
+
+// 自動複製失敗時把文字全選起來，她長按就能自己「拷貝」
+function selectForManualCopy(area) {
+  if (!area) return;
+  area.focus({ preventScroll: true });
+  area.setSelectionRange(0, area.value.length);
+}
+
 async function copyOutput() {
   const area = $('#output');
   const text = area ? area.value : ui.output;
-  try {
-    await navigator.clipboard.writeText(text);
-  } catch (e) {
-    // 舊版 iOS 或非 HTTPS 時的備用做法
-    area.select();
-    document.execCommand('copy');
-    area.blur();
+  if (await copyText(text)) {
+    toast('已複製好囉～吱吱 💕 可以去 LINE 貼上了');
+  } else {
+    selectForManualCopy(area);
+    toast('自動複製失敗了 😢 文字已經幫妳全選，長按選「拷貝」就可以', 4000);
   }
-  toast('已複製好囉～吱吱 💕 可以去 LINE 貼上了');
 }
 
 // ───────────────────────── 管理 ─────────────────────────
@@ -1378,8 +1404,12 @@ async function exportData() {
       overlay.querySelector('[data-sheet-cancel]').addEventListener('click', closeSheet);
       overlay.querySelector('#export-copy').addEventListener('click', async () => {
         const area = overlay.querySelector('#export-text');
-        try { await navigator.clipboard.writeText(area.value); } catch (e) { area.select(); document.execCommand('copy'); }
-        toast('已複製 ✨');
+        if (await copyText(area.value)) {
+          toast('已複製 ✨');
+        } else {
+          selectForManualCopy(area);
+          toast('自動複製失敗了，文字已經全選，長按選「拷貝」', 4000);
+        }
       });
     },
   });
@@ -1604,12 +1634,8 @@ const actions = {
     openSupportSheet();
   },
   async 'copy-line-id'() {
-    try {
-      await navigator.clipboard.writeText(SUPPORT_LINE_ID);
-      toast('已複製 LINE ID～');
-    } catch (e) {
-      toast(`複製不了，請手動輸入：${SUPPORT_LINE_ID}`, 3000);
-    }
+    if (await copyText(SUPPORT_LINE_ID)) toast('已複製 LINE ID～');
+    else toast(`複製不了，請手動輸入：${SUPPORT_LINE_ID}`, 3000);
   },
   'show-disclaimer'() {
     const agreed = sync.agreed;
