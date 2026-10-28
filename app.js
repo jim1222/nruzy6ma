@@ -335,10 +335,17 @@ function handlePush(result) {
 }
 
 let pendingRemote = null;
+let imeComposing = false;
+document.addEventListener('compositionstart', () => { imeComposing = true; });
+document.addEventListener('compositionend', () => { imeComposing = false; });
+// 選字中輸入框被關掉時有的瀏覽器不會送 compositionend，離開輸入框就當作結束，才不會一直卡著不同步
+document.addEventListener('focusout', () => { imeComposing = false; });
 function applyRemote(result) {
   // 表單開著的時候先不換資料，表單手上拿的是舊的公司物件，換掉後按儲存會改到舊物件
+  // 注音選字（含選標點）到一半也先等一下：整頁重畫會把選到一半的字打斷，像是打不出來。
+  // 只等選字那一兩秒，不是整段打字時間都等，不然手機一直停在舊版本，她一儲存就會被雲端退回
   pendingRemote = result;
-  if ($('#sheet-root').children.length) {
+  if ($('#sheet-root').children.length || imeComposing) {
     setTimeout(() => { if (pendingRemote === result) applyRemote(result); }, 1000);
     return;
   }
@@ -743,6 +750,7 @@ const HOLIDAY_KEY = 'bookkeeping-helper-holidays';
 const holidays = (() => {
   try { return JSON.parse(localStorage.getItem(HOLIDAY_KEY) || '{}'); } catch (e) { return {}; }
 })();
+// 這次開 App 抓過的年份；每次開都重抓一次（抓到之前先用快取），來源有修正才跟得上
 const holidayFetched = new Set();
 
 function isHoliday(d) {
@@ -751,7 +759,7 @@ function isHoliday(d) {
 }
 
 async function loadHolidays(year) {
-  if (holidays[year] || holidayFetched.has(year)) return;
+  if (holidayFetched.has(year)) return;
   holidayFetched.add(year);
   try {
     const resp = await fetch(HOLIDAY_URL(year));
@@ -994,10 +1002,13 @@ function renderGenerate() {
 // 選取後複製。iOS 的 select() 選不到字，要再 setSelectionRange；設 readonly 才不會跳鍵盤。
 // 回傳有沒有真的複製到，複製失敗不能跟她說「已複製」，不然她貼到 LINE 才發現是舊的內容
 async function copyText(text) {
-  try {
-    await navigator.clipboard.writeText(text);
-    return true;
-  } catch (e) { /* 改用備用做法 */ }
+  // 沒有 Clipboard API 就直接用備用做法，不先 await：iOS 等過之後就不算是她按的了，會不給複製
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch (e) { /* 改用備用做法 */ }
+  }
   const tmp = document.createElement('textarea');
   tmp.value = text;
   tmp.setAttribute('readonly', '');
@@ -1240,7 +1251,8 @@ function bindItemEditor(overlay, items) {
     draw();
   };
   overlay.querySelector('#item-add').addEventListener('click', add);
-  input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); add(); } });
+  // 注音選字時按的 Enter 是在確定候選字，不是要新增項目（跟下面全域的 data-enter 一樣要看 isComposing）
+  input.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); add(); } });
   list.addEventListener('click', e => {
     const remove = e.target.closest('[data-remove]');
     const move = e.target.closest('[data-move]');
