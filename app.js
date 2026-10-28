@@ -686,6 +686,10 @@ function renderOverview() {
 // 待辦的時間區間（可不填）：'開始時間'、'結束時間' 都是 HH:MM，跟電腦版一樣。舊版不認得這兩個欄位，
 // 但待辦物件是原地修改，舊版存檔也會原樣留著
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+// 上班時間 08:30～17:30，每 15 分鐘一格（跟電腦版 TIME_CHOICES 一樣）
+const TIME_FIRST = '08:30';
+const TIME_LAST = '17:30';
+const TIME_CHOICES = Array.from({ length: 37 }, (_, i) => 8 * 60 + 30 + i * 15).map(m => `${pad(Math.floor(m / 60))}:${pad(m % 60)}`);
 function todoTimeText(t) {
   const start = t['開始時間'] || '';
   if (!TIME_RE.test(start)) return '';
@@ -696,21 +700,31 @@ function compareTodos(a, b) {
   return (a['日期'] || '').localeCompare(b['日期'] || '') || (a['開始時間'] || '').localeCompare(b['開始時間'] || '');
 }
 
+// 用 <select>：iPhone 會跳出系統的滾輪選擇器，只列 08:30～17:30（原本的時間輸入框要從 00:00 轉，很難選）
+function timeSelectHtml(id, value, label, extra = '') {
+  // 舊資料的時間不在清單裡也要列出來，不然一打開編輯就被換掉
+  const choices = value && !TIME_CHOICES.includes(value) ? [value, ...TIME_CHOICES] : TIME_CHOICES;
+  const options = ['<option value="">--:--</option>', ...choices.map(t => `<option value="${t}"${t === value ? ' selected' : ''}>${t}</option>`)];
+  return `<select id="${id}" class="input" aria-label="${label}"${extra}>${options.join('')}</select>`;
+}
+
 function timeRangeHtml(prefix, start = '', end = '') {
   return `
     <div class="time-range">
-      <input id="${prefix}-start" class="input" type="time" value="${esc(start)}" aria-label="開始時間">
+      ${timeSelectHtml(`${prefix}-start`, start, '開始時間', ` data-change="time-start" data-prefix="${prefix}"`)}
       <span>~</span>
-      <input id="${prefix}-end" class="input" type="time" value="${esc(end)}" aria-label="結束時間">
+      ${timeSelectHtml(`${prefix}-end`, end, '結束時間')}
       <button class="btn small ghost" type="button" data-action="clear-time" data-prefix="${prefix}">清除</button>
     </div>`;
 }
+
 
 // 讀時間欄位並檢查，不對就提示並回傳 null
 function readTimeRange(prefix) {
   const start = $(`#${prefix}-start`).value;
   const end = $(`#${prefix}-end`).value;
   if ((start && !TIME_RE.test(start)) || (end && !TIME_RE.test(end))) { toast('時間格式不對，請重新選'); return null; }
+  if ([start, end].some(t => t && (t < TIME_FIRST || t > TIME_LAST))) { toast(`時間只能選 ${TIME_FIRST} 到 ${TIME_LAST}`); return null; }
   if (end && !start) { toast('有結束時間的話，也要選開始時間'); return null; }
   if (end && end < start) { toast('結束時間不能比開始時間早'); return null; }
   return { '開始時間': start, '結束時間': end };
@@ -1064,7 +1078,8 @@ function renderGenerate() {
     ${option ? `
       <h2 class="section-title pink">📝 訊息內容（可以先改再複製）</h2>
       <div class="bubble-wrap">
-        <textarea id="output" class="bubble">${esc(ui.output)}</textarea>
+        <div class="bubble-hl" aria-hidden="true"></div>
+        <textarea id="output" class="bubble" spellcheck="false">${esc(ui.output)}</textarea>
         <svg class="bubble-tail" viewBox="0 0 28 16" aria-hidden="true">
           <polygon points="0,0 26,0 6,16" fill="#fff" stroke="#FFD6E6" stroke-width="2"/>
           <line x1="1" y1="1" x2="25" y2="1" stroke="#fff" stroke-width="3"/>
@@ -1102,6 +1117,61 @@ function selectForManualCopy(area) {
   if (!area) return;
   area.focus({ preventScroll: true });
   area.setSelectionRange(0, area.value.length);
+}
+
+// ───────────────────────── 訊息泡泡的金額紅字、日期藍字 ─────────────────────────
+// textarea 不能單獨幫某幾個字上色，所以編輯、注音輸入、複製還是用原本的 textarea（字設成透明），
+// 後面疊一層同字型、同 padding 的 div 畫彩色的字。複製拿的是 textarea 的 value，所以還是純文字。
+// 規則跟電腦版 highlight_ranges 一樣，改這裡要一起改
+const HL_DIGIT = '[0-9０-９]';
+// 用 String.raw：一般的 `...` 會把 \s、\. 的反斜線吃掉，正規式就壞了
+const HL_NUM = String.raw`${HL_DIGIT}[0-9０-９,，]*(?:\.${HL_DIGIT}+)?`;
+const HL_MONEY = String.raw`(?:NT\$|NTD|新[台臺]幣|\$|＄)\s*${HL_NUM}(?:\s*(?:萬元|元|塊錢|塊))?|${HL_NUM}\s*(?:萬元|元|塊錢|塊)`;
+const HL_DATE = String.raw`(?:(?:${HL_DIGIT}{4}\s*年\s*)?(${HL_DIGIT}{1,2})\s*月\s*(${HL_DIGIT}{1,2})\s*[日號]`
+  + String.raw`|(?:${HL_DIGIT}{4}[/-])?(${HL_DIGIT}{1,2})[/-](${HL_DIGIT}{1,2})`
+  + String.raw`|(${HL_DIGIT}{1,2})\s*[日號])(?:\s*[（(][一二三四五六日天][）)])?`
+  + '|(?:星期|週|周|禮拜)[一二三四五六日天]';
+const HL_RE = new RegExp(`(${HL_MONEY})|(${HL_DATE})`, 'g');
+
+function toHalfWidth(text) { return text.replace(/[０-９]/g, ch => String.fromCharCode(ch.charCodeAt(0) - 0xFEE0)); }
+
+// 回傳 [{start, end, kind: 'money' | 'date'}]
+function highlightRanges(text) {
+  const ranges = [];
+  for (const m of text.matchAll(HL_RE)) {
+    // 前後緊接著數字就不算（例如 123/45 裡的 3/45、12/34 裡的 12/3），不用 lookbehind，舊版 iOS 不支援
+    if (m.index > 0 && /[0-9０-９]/.test(text[m.index - 1])) continue;
+    if (/[0-9０-９]/.test(text[m.index + m[0].length] || '')) continue;
+    if (m[2]) {
+      const month = m[3] || m[5];
+      const day = m[4] || m[6] || m[7];
+      if (month && !(+toHalfWidth(month) >= 1 && +toHalfWidth(month) <= 12)) continue;
+      if (day && !(+toHalfWidth(day) >= 1 && +toHalfWidth(day) <= 31)) continue;
+    }
+    ranges.push({ start: m.index, end: m.index + m[0].length, kind: m[1] ? 'money' : 'date' });
+  }
+  return ranges;
+}
+
+function highlightHtml(text) {
+  let html = '';
+  let pos = 0;
+  highlightRanges(text).forEach(({ start, end, kind }) => {
+    html += esc(text.slice(pos, start)) + `<span class="hl-${kind}">${esc(text.slice(start, end))}</span>`;
+    pos = end;
+  });
+  // 最後是換行的話 div 不會多畫一行，textarea 會，補一個空白兩邊才一樣高
+  return html + esc(text.slice(pos)) + (text.endsWith('\n') ? ' ' : '');
+}
+
+// 重畫彩色那層，textarea 跟著內容長高（不讓它出現捲軸，有捲軸兩層換行位置會不一樣）
+function syncBubble() {
+  const area = $('#output');
+  const layer = $('.bubble-hl');
+  if (!area || !layer) return;
+  layer.innerHTML = highlightHtml(area.value);
+  area.style.height = 'auto';
+  area.style.height = `${Math.max(220, area.scrollHeight + 4)}px`;
 }
 
 async function copyOutput() {
@@ -1775,7 +1845,7 @@ const changes = {
     if (el.dataset.key === 'pickup') {
       ui.output = buildOutput();
       const area = $('#output');
-      if (area) area.value = ui.output;
+      if (area) { area.value = ui.output; syncBubble(); }
     }
   },
   'toggle-todo'(el) {
@@ -1822,7 +1892,7 @@ const changes = {
     ui.checks[el.dataset.item] = el.checked;
     ui.output = buildOutput();
     const area = $('#output');
-    if (area) area.value = ui.output;
+    if (area) { area.value = ui.output; syncBubble(); }
   },
 };
 
@@ -1846,13 +1916,20 @@ changes['no-contact-days'] = el => {
   render();
 };
 
+// 選了開始時間、結束還沒選（或比開始早）時，結束自動帶開始後 30 分鐘（跟電腦版一樣）
+changes['time-start'] = el => {
+  const end = $(`#${el.dataset.prefix}-end`);
+  const i = TIME_CHOICES.indexOf(el.value);
+  if (i >= 0 && (!end.value || end.value < el.value)) end.value = TIME_CHOICES[Math.min(i + 2, TIME_CHOICES.length - 1)];
+};
+
 document.addEventListener('change', e => {
   const el = e.target.closest('[data-change]');
   if (el && changes[el.dataset.change]) changes[el.dataset.change](el, e);
 });
 
 document.addEventListener('input', e => {
-  if (e.target.id === 'output') ui.output = e.target.value;
+  if (e.target.id === 'output') { ui.output = e.target.value; syncBubble(); }
 });
 
 document.addEventListener('keydown', e => {
@@ -2171,7 +2248,7 @@ function render() {
   const renderers = { overview: renderOverview, todo: renderTodo, calendar: renderCalendar, progress: renderProgress, generate: renderGenerate, manage: renderManage };
   // 整頁重畫時保留還沒送出的輸入框內容和游標所在的欄位（例如打到一半，雲端剛好同步進來）
   const drafts = {};
-  view.querySelectorAll('input.input[id]').forEach(el => { drafts[el.id] = el.value; });
+  view.querySelectorAll('input.input[id], select.input[id]').forEach(el => { drafts[el.id] = el.value; });
   const focusedId = document.activeElement && view.contains(document.activeElement) ? document.activeElement.id : '';
   if (focusedId === 'intro-input') drafts[focusedId] = document.activeElement.value;
   // 第一次開啟（或聲明改版）先跑歡迎流程；同意過但還沒連線碼／暱稱，才是原本的設定畫面
@@ -2179,6 +2256,7 @@ function render() {
   const setup = welcome || !sync.key || ui.setup || ui.nameSetup || !sync.name;
   view.innerHTML = welcome ? renderWelcome() : setup ? renderSetup() : renderers[ui.tab]();
   document.querySelector('.tabbar').hidden = setup;
+  syncBubble();
   Object.entries(drafts).forEach(([id, value]) => {
     const el = document.getElementById(id);
     if (el) el.value = value;

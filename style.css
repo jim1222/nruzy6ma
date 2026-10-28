@@ -293,18 +293,44 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .segmented button.selected { background: var(--pink-dark); font-weight: bold; }
 
 .bubble-wrap { position: relative; margin-bottom: 18px; }
-.bubble {
+/* 訊息泡泡分兩層：後面 .bubble-hl 畫彩色的字（金額紅、日期藍），前面 textarea 字是透明的，
+   負責編輯、游標、選取、複製。兩層的字型、padding、border、行高、換行規則要完全一樣，字才會疊在一起 */
+.bubble, .bubble-hl {
   width: 100%;
   min-height: 220px;
   padding: 14px 16px;
   border: 2px solid var(--pink);
   border-radius: var(--r-card);
-  background: var(--panel);
   font-size: 16px;
   line-height: 1.7;
-  resize: vertical;
+  letter-spacing: normal;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  word-break: normal;
+}
+.bubble-hl {
+  position: absolute;
+  inset: 0;
+  border-color: transparent;
+  background: var(--panel);
+  color: var(--text);
+  overflow: hidden;
+  pointer-events: none;
+}
+.bubble-hl .hl-money { color: #E5636C; }
+.bubble-hl .hl-date { color: #3B82C4; }
+.bubble {
+  position: relative;
+  display: block;
+  background: transparent;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  caret-color: var(--text);
+  resize: none;
+  overflow: hidden;
   outline: none;
 }
+.bubble::selection { background: rgba(127, 203, 238, .35); }
 .bubble:focus { border-color: var(--pink-dark); }
 .bubble-tail { position: absolute; left: 32px; bottom: -14px; width: 28px; height: 16px; }
 
