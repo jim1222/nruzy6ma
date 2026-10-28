@@ -1123,34 +1123,74 @@ function selectForManualCopy(area) {
 // textarea 不能單獨幫某幾個字上色，所以編輯、注音輸入、複製還是用原本的 textarea（字設成透明），
 // 後面疊一層同字型、同 padding 的 div 畫彩色的字。複製拿的是 textarea 的 value，所以還是純文字。
 // 規則跟電腦版 highlight_ranges 一樣，改這裡要一起改
-const HL_DIGIT = '[0-9０-９]';
+const HL_D = '[0-9０-９]';
 // 用 String.raw：一般的 `...` 會把 \s、\. 的反斜線吃掉，正規式就壞了
-const HL_NUM = String.raw`${HL_DIGIT}[0-9０-９,，]*(?:\.${HL_DIGIT}+)?`;
-const HL_MONEY = String.raw`(?:NT\$|NTD|新[台臺]幣|\$|＄)\s*${HL_NUM}(?:\s*(?:萬元|元|塊錢|塊))?|${HL_NUM}\s*(?:萬元|元|塊錢|塊)`;
-const HL_DATE = String.raw`(?:(?:${HL_DIGIT}{4}\s*年\s*)?(${HL_DIGIT}{1,2})\s*月\s*(${HL_DIGIT}{1,2})\s*[日號]`
-  + String.raw`|(?:${HL_DIGIT}{4}[/-])?(${HL_DIGIT}{1,2})[/-](${HL_DIGIT}{1,2})`
-  + String.raw`|(${HL_DIGIT}{1,2})\s*[日號])(?:\s*[（(][一二三四五六日天][）)])?`
-  + '|(?:星期|週|周|禮拜)[一二三四五六日天]';
+// 千分位逗號後面一定要接數字，句子裡的「3500，」逗號才不會被算進去
+const HL_NUM = String.raw`${HL_D}(?:${HL_D}|[,，]${HL_D})*(?:\.${HL_D}+)?`;
+const HL_CN_NUM = '[零〇一二兩三四五六七八九十百千萬壹貳參叁肆伍陸柒捌玖拾佰仟]';
+const HL_CN_SMALL = '[一二兩三四五六七八九十]';
+const HL_MONEY = [
+  String.raw`(?:NT\$|NTD|新[台臺]幣|\$|＄)\s*${HL_NUM}(?:\s*(?:萬元|元整|元|塊錢|塊))?`,  // NT$1,200、新台幣 500 元
+  String.raw`${HL_NUM}\s*(?:[-~～至到]\s*${HL_NUM}\s*)?(?:萬元|元整|元|塊錢|塊)`,      // 3,500 元、1.5萬元、5,000元整、3,000至5,000元
+  String.raw`(?:新[台臺]幣\s*)?${HL_CN_NUM}{2,}元整?`,                               // 參仟伍佰元整
+  String.raw`_{2,}\s*元`,                                                             // 「___ 元」等著填的金額
+].join('|');
+const HL_DATE = [
+  // 2026年10月28日、114年10月、9-10月份、10月5號，後面可帶（三）
+  String.raw`(?:(?:民國\s*)?${HL_D}{2,4}\s*年\s*)?${HL_D}{1,2}\s*(?:[-~～、至到]\s*${HL_D}{1,2}\s*)?月(?:\s*份)?(?:\s*${HL_D}{1,2}\s*[日號])?(?:\s*[（(][一二三四五六日天][）)])?`,
+  String.raw`(?:民國\s*)?(?:${HL_D}{2,4}[/-])?${HL_D}{1,2}[/-]${HL_D}{1,2}(?:\s*[（(][一二三四五六日天][）)])?`,  // 10/30、114/10/28
+  String.raw`${HL_D}{1,2}\s*[日號](?:\s*[（(][一二三四五六日天][）)])?`,                         // 本月10日的 10日
+  String.raw`(?:(?:早上|上午|中午|下午|晚上)\s*)?${HL_D}{1,2}\s*[點点](?:\s*(?:半|${HL_D}{1,2}\s*分))?`,  // 早上10點、3點半
+  String.raw`${HL_D}{1,2}:${HL_D}{2}`,                                                          // 10:30
+  // 國字的日期、時間：十月五日、十二月、早上十點（國字的「點」一定要前面有早上、下午，不然「快一點」會被標到）
+  `${HL_CN_SMALL}{1,3}月(?:${HL_CN_SMALL}{1,3}[日號])?`,
+  String.raw`(?:早上|上午|中午|下午|晚上)\s*${HL_CN_SMALL}{1,3}[點点](?:\s*(?:半|${HL_CN_SMALL}{1,3}\s*分))?`,
+  '(?:[本上下這这次])?(?:個)?(?:週|周|星期|禮拜)[一二三四五六日天]',                           // 下周三、星期五（要比「下周」先比對）
+  '[本上下這这次](?:個)?(?:月|期|週|周|星期|禮拜)(?:[初底中])?',                               // 本月、上期、下個月底
+  '月[初底中]|[今明後昨][天日]',                                                                // 月底、明天
+].join('|');
 const HL_RE = new RegExp(`(${HL_MONEY})|(${HL_DATE})`, 'g');
+// 前面寫明是費用、金額，後面沒寫「元」的數字也算金額：「費用為 800」「合計 12,000」
+const HL_MONEY_KEYWORD_RE = new RegExp(String.raw`(?:費用|金額|總計|合計|共計|總共|應付|應繳|稅額|稅款|款項)(?:為|是|共)?\s*[:：]?\s*(${HL_NUM})`, 'g');
 
 function toHalfWidth(text) { return text.replace(/[０-９]/g, ch => String.fromCharCode(ch.charCodeAt(0) - 0xFEE0)); }
 
-// 回傳 [{start, end, kind: 'money' | 'date'}]
+// 日期、時間的數字要合理：月 1～12、日 1～31、時 0～24、分 0～59（13/45、32日、25點都不算）
+function validDateText(raw) {
+  const text = toHalfWidth(raw);
+  const inRange = (v, lo, hi) => +v >= lo && +v <= hi;
+  for (const m of text.matchAll(/(\d+)\s*(?:[-~～、至到]\s*(\d+)\s*)?月/g)) {
+    if (!inRange(m[1], 1, 12) || (m[2] && !inRange(m[2], 1, 12))) return false;
+  }
+  for (const m of text.matchAll(/(\d+)\s*[日號]/g)) if (!inRange(m[1], 1, 31)) return false;
+  for (const m of text.matchAll(/(\d+)\s*[點点]/g)) if (!inRange(m[1], 0, 24)) return false;
+  for (const m of text.matchAll(/(\d+)\s*分/g)) if (!inRange(m[1], 0, 59)) return false;
+  const clock = text.match(/(\d+):(\d+)/);
+  if (clock && !(inRange(clock[1], 0, 24) && inRange(clock[2], 0, 59))) return false;
+  const slash = !text.includes('月') && text.match(/(\d+)[/-](\d+)(?:\s*[（(].*)?$/);
+  if (slash && !(inRange(slash[1], 1, 12) && inRange(slash[2], 1, 31))) return false;
+  return true;
+}
+
+// 回傳 [{start, end, kind: 'money' | 'date'}]，照位置排好
 function highlightRanges(text) {
+  const isDigit = ch => /[0-9０-９]/.test(ch || '');
   const ranges = [];
   for (const m of text.matchAll(HL_RE)) {
-    // 前後緊接著數字就不算（例如 123/45 裡的 3/45、12/34 裡的 12/3），不用 lookbehind，舊版 iOS 不支援
-    if (m.index > 0 && /[0-9０-９]/.test(text[m.index - 1])) continue;
-    if (/[0-9０-９]/.test(text[m.index + m[0].length] || '')) continue;
-    if (m[2]) {
-      const month = m[3] || m[5];
-      const day = m[4] || m[6] || m[7];
-      if (month && !(+toHalfWidth(month) >= 1 && +toHalfWidth(month) <= 12)) continue;
-      if (day && !(+toHalfWidth(day) >= 1 && +toHalfWidth(day) <= 31)) continue;
-    }
-    ranges.push({ start: m.index, end: m.index + m[0].length, kind: m[1] ? 'money' : 'date' });
+    const end = m.index + m[0].length;
+    // 數字開頭／結尾時，前後緊接著數字就不算（例如 123/45 裡的 3/45、12/34 裡的 12/3）。不用 lookbehind，舊版 iOS 不支援
+    if (isDigit(m[0][0]) && isDigit(text[m.index - 1])) continue;
+    if (isDigit(m[0][m[0].length - 1]) && isDigit(text[end])) continue;
+    if (m[2] && !validDateText(m[0])) continue;
+    ranges.push({ start: m.index, end, kind: m[1] ? 'money' : 'date' });
   }
-  return ranges;
+  for (const m of text.matchAll(HL_MONEY_KEYWORD_RE)) {
+    const end = m.index + m[0].length;
+    const start = end - m[1].length;
+    if (isDigit(text[end]) || ranges.some(r => r.start < end && start < r.end)) continue;
+    ranges.push({ start, end, kind: 'money' });
+  }
+  return ranges.sort((a, b) => a.start - b.start);
 }
 
 function highlightHtml(text) {
