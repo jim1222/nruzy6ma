@@ -423,7 +423,7 @@ function collectReminderItems() {
       if (!due) continue;
       const daysLeft = daysFromToday(due);
       if (daysLeft <= DEADLINE_WARNING_DAYS) {
-        deadlines.push({ 公司: name, 標題: d['標題'] || '', 日期: d['日期'], 剩餘天數: daysLeft });
+        deadlines.push({ 公司: name, 標題: d['標題'] || '', 日期: d['日期'], 剩餘天數: daysLeft, 時間: todoTimeText(d) });
       }
     }
     const progress = (company['月度進度'] || {})[monthKey] || {};
@@ -431,7 +431,7 @@ function collectReminderItems() {
       if (!progress[task]) monthly.push({ 公司: name, 項目: task });
     }
   }
-  deadlines.sort((a, b) => a['剩餘天數'] - b['剩餘天數']);
+  deadlines.sort((a, b) => a['剩餘天數'] - b['剩餘天數'] || a['時間'].localeCompare(b['時間']));
   return { todos, deadlines, monthly };
 }
 
@@ -787,14 +787,16 @@ function openTodoForm(todo) {
   });
 }
 
-// 截止日期、催件紀錄共用的編輯表單：日期＋一行文字。onSave(date, text) 回傳 false 就不關表單
-function openDatedTextForm({ title, date, text, textLabel, onSave }) {
+// 截止日期、催件紀錄共用的編輯表單：日期＋（截止日期才有的）時間＋一行文字。
+// onSave(date, text, time) 回傳 false 就不關表單；time 是 { 開始時間, 結束時間 }，沒有時間欄就是 undefined
+function openDatedTextForm({ title, date, text, textLabel, time, onSave }) {
   openSheet({
     title,
     footer: formFooter,
     body: `
       <label class="field-label" for="df-date">日期</label>
       <input id="df-date" class="input" type="date" value="${esc(date || '')}">
+      ${time ? `<label class="field-label">時間（可不填）</label>${timeRangeHtml('df', time['開始時間'] || '', time['結束時間'] || '')}` : ''}
       <label class="field-label" for="df-text">${esc(textLabel)}</label>
       <input id="df-text" class="input" value="${esc(text || '')}">`,
     onMount(overlay) {
@@ -803,7 +805,9 @@ function openDatedTextForm({ title, date, text, textLabel, onSave }) {
         const newText = $('#df-text').value.trim();
         if (!parseIso(newDate)) { toast('請選日期'); return false; }
         if (!newText) { toast(`請輸入${textLabel}`); return false; }
-        if (onSave(newDate, newText) === false) return false;
+        const newTime = time ? readTimeRange('df') : undefined;
+        if (newTime === null) return false;
+        if (onSave(newDate, newText, newTime) === false) return false;
         save();
         render();
         toast('已儲存好囉～吱吱 🐹');
@@ -940,11 +944,11 @@ function renderCalendar() {
         <button class="btn danger small" data-action="delete-todo" data-id="${esc(t.id)}">刪除</button>
         ${markHtml(t['修改標記'], `todo:${t.id}`)}
       </div>`).join('');
-  const deadlineHtml = dayItems.deadlines.map(({ company, d }) => `
+  const deadlineHtml = [...dayItems.deadlines].sort((a, b) => compareTodos(a.d, b.d)).map(({ company, d }) => `
       <div class="list-row${isUrgent(day, d['完成'], true) ? ' danger-text' : ''}">
         ${checkHtml({
           checked: d['完成'], change: 'toggle-deadline', data: { id: d.id, company: company.id }, strike: true,
-          label: `<span class="date-tag">${esc(companyLabel(company))}</span>${esc(d['標題'])}`,
+          label: `<span class="date-tag">${todoTimeText(d) ? `${todoTimeText(d)}　` : ''}${esc(companyLabel(company))}</span>${esc(d['標題'])}`,
         })}
         <button class="btn small" data-action="edit-deadline" data-id="${esc(d.id)}" data-company="${esc(company.id)}">編輯</button>
         ${markHtml(d['修改標記'], `deadline:${d.id}:${company.id}`)}
@@ -996,7 +1000,7 @@ function renderProgress() {
       }) + markHtml(taskMarks[task], `monthly:${i}`)).join('')
     : '<p class="empty">這間公司還沒有設定月度待辦項目，按右上「管理項目」新增</p>';
 
-  const deadlines = [...(company['截止日期'] || [])].sort((a, b) => (a['日期'] || '').localeCompare(b['日期'] || ''));
+  const deadlines = [...(company['截止日期'] || [])].sort(compareTodos);
   const deadlineHtml = deadlines.length
     ? deadlines.map(d => {
         const due = parseIso(d['日期']);
@@ -1010,7 +1014,7 @@ function renderProgress() {
           <div class="list-row${soon ? ' danger-text' : ''}">
             ${checkHtml({
               checked: d['完成'], change: 'toggle-deadline', data: { id: d.id }, strike: true,
-              label: `<span class="date-tag">${esc(friendlyDate(d['日期']))}${when}</span>${esc(d['標題'])}`,
+              label: todoLabelHtml({ ...d, '內容': d['標題'] }, when),
             })}
             <button class="btn small" data-action="edit-deadline" data-id="${esc(d.id)}">編輯</button>
             <button class="btn danger small" data-action="delete-deadline" data-id="${esc(d.id)}">刪除</button>
@@ -1040,6 +1044,8 @@ function renderProgress() {
     <section class="card">
       <h2 class="card-title">⏰ 截止日期</h2>
       ${monthDayPickerHtml('deadline', true)}
+      <label class="field-label">時間（可不填）</label>
+      ${timeRangeHtml('deadline')}
       <div class="input-row" style="margin-top:8px">
         <input id="deadline-input" class="input" placeholder="例如：營業稅申報" enterkeyhint="done" data-enter="add-deadline">
         <button class="btn" data-action="add-deadline">新增</button>
@@ -1653,7 +1659,7 @@ function openReminderSheet(items) {
   const deadlineText = d => {
     const days = d['剩餘天數'];
     const when = days < 0 ? `已逾期 ${-days} 天` : days === 0 ? '今天到期' : `${days} 天後到期`;
-    return `${d['公司']}－${d['標題']}（${when}）`;
+    return `${d['公司']}－${d['標題']}（${when}${d['時間'] ? `　${d['時間']}` : ''}）`;
   };
   openSheet({
     title: '🐹 焙子的今日提醒',
@@ -1790,9 +1796,13 @@ const actions = {
     const input = $('#deadline-input');
     const title = input.value.trim();
     if (!title) { toast('請輸入截止日期的標題'); input.focus(); return; }
+    const time = readTimeRange('deadline');
+    if (!time) return;
     const company = selectedCompany();
     input.value = '';
-    (company['截止日期'] = company['截止日期'] || []).push({ id: uid(), '標題': title, '日期': pickedIso('deadline'), '完成': false, '修改標記': newMark('新增') });
+    $('#deadline-start').value = '';
+    $('#deadline-end').value = '';
+    (company['截止日期'] = company['截止日期'] || []).push({ id: uid(), '標題': title, '日期': pickedIso('deadline'), ...time, '完成': false, '修改標記': newMark('新增') });
     save();
     render();
   },
@@ -1801,8 +1811,8 @@ const actions = {
     const deadline = (company?.['截止日期'] || []).find(d => d.id === el.dataset.id);
     if (!deadline) return;
     openDatedTextForm({
-      title: '編輯截止日期', date: deadline['日期'], text: deadline['標題'], textLabel: '截止日期的標題',
-      onSave(date, title) { Object.assign(deadline, { '日期': date, '標題': title, '修改標記': newMark() }); },
+      title: '編輯截止日期', date: deadline['日期'], text: deadline['標題'], textLabel: '截止日期的標題', time: deadline,
+      onSave(date, title, time) { Object.assign(deadline, { '日期': date, '標題': title, ...time, '修改標記': newMark() }); },
     });
   },
   'delete-deadline'(el) {
