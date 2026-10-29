@@ -787,6 +787,31 @@ function openTodoForm(todo) {
   });
 }
 
+// 截止日期、催件紀錄共用的編輯表單：日期＋一行文字。onSave(date, text) 回傳 false 就不關表單
+function openDatedTextForm({ title, date, text, textLabel, onSave }) {
+  openSheet({
+    title,
+    footer: formFooter,
+    body: `
+      <label class="field-label" for="df-date">日期</label>
+      <input id="df-date" class="input" type="date" value="${esc(date || '')}">
+      <label class="field-label" for="df-text">${esc(textLabel)}</label>
+      <input id="df-text" class="input" value="${esc(text || '')}">`,
+    onMount(overlay) {
+      bindFormButtons(overlay, () => {
+        const newDate = $('#df-date').value;
+        const newText = $('#df-text').value.trim();
+        if (!parseIso(newDate)) { toast('請選日期'); return false; }
+        if (!newText) { toast(`請輸入${textLabel}`); return false; }
+        if (onSave(newDate, newText) === false) return false;
+        save();
+        render();
+        toast('已儲存好囉～吱吱 🐹');
+      });
+    },
+  });
+}
+
 function renderTodo() {
   const today = todayIso();
   const todos = [...state.todos].sort(compareTodos);
@@ -921,6 +946,7 @@ function renderCalendar() {
           checked: d['完成'], change: 'toggle-deadline', data: { id: d.id, company: company.id }, strike: true,
           label: `<span class="date-tag">${esc(companyLabel(company))}</span>${esc(d['標題'])}`,
         })}
+        <button class="btn small" data-action="edit-deadline" data-id="${esc(d.id)}" data-company="${esc(company.id)}">編輯</button>
         ${markHtml(d['修改標記'], `deadline:${d.id}:${company.id}`)}
       </div>`).join('');
   const logHtml = dayItems.logs.map(({ company, log }) => `
@@ -986,6 +1012,7 @@ function renderProgress() {
               checked: d['完成'], change: 'toggle-deadline', data: { id: d.id }, strike: true,
               label: `<span class="date-tag">${esc(friendlyDate(d['日期']))}${when}</span>${esc(d['標題'])}`,
             })}
+            <button class="btn small" data-action="edit-deadline" data-id="${esc(d.id)}">編輯</button>
             <button class="btn danger small" data-action="delete-deadline" data-id="${esc(d.id)}">刪除</button>
             ${markHtml(d['修改標記'], `deadline:${d.id}`)}
           </div>`;
@@ -997,6 +1024,7 @@ function renderProgress() {
     ? logs.map(log => `
         <div class="log-row">
           <div class="log-text"><span class="date-tag">${esc(log['時間'])}</span>${esc(log['內容'])}${markHtml(log['修改標記'], `log:${log.id}`)}</div>
+          <button class="btn small" data-action="edit-log" data-id="${esc(log.id)}">編輯</button>
           <button class="btn danger small" data-action="delete-log" data-id="${esc(log.id)}">刪除</button>
         </div>`).join('')
     : '<p class="empty">還沒有催件紀錄</p>';
@@ -1440,18 +1468,40 @@ function itemEditorHtml(placeholder) {
     </div>`;
 }
 
-function bindItemEditor(overlay, items) {
+// renames 會記下改名 [舊, 新]，月度待辦存檔時要把各月份的勾選進度跟著搬過去
+function bindItemEditor(overlay, items, renames = []) {
   const list = overlay.querySelector('#item-list');
   const input = overlay.querySelector('#item-input');
+  let editing = null;
   const draw = () => {
     list.innerHTML = items.length
-      ? items.map((item, i) => `
+      ? items.map((item, i) => i === editing ? `
+          <div class="list-row">
+            <input class="input" id="item-edit" value="${esc(item)}" enterkeyhint="done" style="flex:1;min-width:0">
+            <button class="btn small primary" data-edit-ok="${i}">確定</button>
+            <button class="btn small" data-edit-cancel>取消</button>
+          </div>` : `
           <div class="list-row">
             <span class="label" style="flex:1;min-width:0;word-break:break-word">${i + 1}. ${esc(item)}</span>
             <button class="btn small" data-move="${i}" ${i === 0 ? 'disabled style="opacity:.35"' : ''} aria-label="往上移">↑</button>
+            <button class="btn small" data-edit="${i}">編輯</button>
             <button class="btn small danger" data-remove="${i}">刪除</button>
           </div>`).join('')
       : '<p class="empty">還沒有項目</p>';
+    const editInput = list.querySelector('#item-edit');
+    if (editInput) {
+      editInput.focus();
+      editInput.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); commitEdit(); } });
+    }
+  };
+  const commitEdit = () => {
+    const value = list.querySelector('#item-edit').value.trim();
+    const old = items[editing];
+    if (!value) { toast('項目不能是空的'); return; }
+    if (value !== old && items.includes(value)) { toast('這個項目已經存在囉'); return; }
+    if (value !== old) { items[editing] = value; renames.push([old, value]); }
+    editing = null;
+    draw();
   };
   const add = () => {
     const value = input.value.trim();
@@ -1465,8 +1515,17 @@ function bindItemEditor(overlay, items) {
   // 注音選字時按的 Enter 是在確定候選字，不是要新增項目（跟下面全域的 data-enter 一樣要看 isComposing）
   input.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); add(); } });
   list.addEventListener('click', e => {
+    if (e.target.closest('[data-edit-ok]')) { commitEdit(); return; }
+    const edit = e.target.closest('[data-edit]');
+    if (edit || e.target.closest('[data-edit-cancel]')) {
+      editing = edit ? +edit.dataset.edit : null;
+      draw();
+      return;
+    }
     const remove = e.target.closest('[data-remove]');
     const move = e.target.closest('[data-move]');
+    // 刪除、移動會讓編號跑掉，改到一半的就當取消
+    if (remove || move) editing = null;
     if (remove) items.splice(+remove.dataset.remove, 1);
     if (move && +move.dataset.move > 0) {
       const i = +move.dataset.move;
@@ -1475,6 +1534,8 @@ function bindItemEditor(overlay, items) {
     if (remove || move) draw();
   });
   draw();
+  // 按「儲存」時還有一項在改：先套用；內容不行就回傳 false，表單不要關
+  return () => editing === null || (commitEdit(), editing === null);
 }
 
 function openOptionForm(company, type, index) {
@@ -1508,8 +1569,9 @@ function openOptionForm(company, type, index) {
         <label class="field-label">這間公司的可勾選項目</label>
         ${itemEditorHtml('例如：電子發票媒體檔')}`,
       onMount(overlay) {
-        bindItemEditor(overlay, items);
+        const flushEdit = bindItemEditor(overlay, items);
         bindFormButtons(overlay, () => {
+          if (!flushEdit()) return false;
           const title = readTitle();
           if (!title) return false;
           commit({ '標題': title, '類型': 'checklist', '項目': items });
@@ -1559,9 +1621,23 @@ function openMonthlyTasksForm(company) {
     footer: formFooter,
     body: `<p class="hint" style="margin:0 0 10px">每個月都要做的事，進度會按月份分開記錄</p>${itemEditorHtml('例如：營業稅申報')}`,
     onMount(overlay) {
-      bindItemEditor(overlay, items);
+      const renames = [];
+      const flushEdit = bindItemEditor(overlay, items, renames);
       bindFormButtons(overlay, () => {
+        if (!flushEdit()) return false;
         if (stableStringify(items) !== stableStringify(company['月度待辦'] || [])) company['月度待辦標記'] = newMark();
+        // 進度是用項目名稱記的，改名要把每個月的勾選和標記一起搬到新名字，不然改完就變回沒勾
+        for (const [from, to] of renames) {
+          for (const key of ['月度進度', '月度進度標記']) {
+            for (const month of Object.values(company[key] || {})) {
+              if (!month) continue;
+              // 新名字底下如果有以前刪掉的同名項目留下的舊進度，以改名前這項的進度為準
+              if (from in month) month[to] = month[from];
+              else delete month[to];
+              delete month[from];
+            }
+          }
+        }
         company['月度待辦'] = items;
         save();
         render();
@@ -1720,6 +1796,15 @@ const actions = {
     save();
     render();
   },
+  'edit-deadline'(el) {
+    const company = el.dataset.company ? findCompany(el.dataset.company) : selectedCompany();
+    const deadline = (company?.['截止日期'] || []).find(d => d.id === el.dataset.id);
+    if (!deadline) return;
+    openDatedTextForm({
+      title: '編輯截止日期', date: deadline['日期'], text: deadline['標題'], textLabel: '截止日期的標題',
+      onSave(date, title) { Object.assign(deadline, { '日期': date, '標題': title, '修改標記': newMark() }); },
+    });
+  },
   'delete-deadline'(el) {
     confirmTwice(el, `deadline-${el.dataset.id}`, () => {
       const company = selectedCompany();
@@ -1739,6 +1824,20 @@ const actions = {
     (company['催件紀錄'] = company['催件紀錄'] || []).unshift({ id: uid(), '時間': time, '內容': content, '修改標記': newMark('新增') });
     save();
     render();
+  },
+  'edit-log'(el) {
+    const company = selectedCompany();
+    const log = (company['催件紀錄'] || []).find(l => l.id === el.dataset.id);
+    if (!log) return;
+    const time = log['時間'] || '';
+    openDatedTextForm({
+      title: '編輯催件紀錄', date: time.slice(0, 10), text: log['內容'], textLabel: '紀錄內容',
+      onSave(date, content) {
+        // 只改日期，幾點幾分照舊；清單是新的在上面，改了日期要重新排
+        Object.assign(log, { '時間': `${date} ${time.slice(11, 16) || '00:00'}`, '內容': content, '修改標記': newMark() });
+        company['催件紀錄'].sort((a, b) => (b['時間'] || '').localeCompare(a['時間'] || ''));
+      },
+    });
   },
   'delete-log'(el) {
     confirmTwice(el, `log-${el.dataset.id}`, () => {
