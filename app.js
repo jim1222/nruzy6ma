@@ -505,7 +505,7 @@ setInterval(tickMarkTimes, 60 * 1000);
 
 // 這間公司底下看得到的標記（客戶進度＋公司與選項），紅點用。月度進度只看本月。
 function companyMarks(company) {
-  const marks = [company['修改標記'], company['月度待辦標記'],
+  const marks = [company['修改標記'], company['月度待辦標記'], company['記事本標記'],
     ...Object.values(((company['月度進度標記'] || {})[currentMonthKey()]) || {})];
   ['選項', '截止日期', '催件紀錄'].forEach(key => (company[key] || []).forEach(item => marks.push(item['修改標記'])));
   return marks.filter(Boolean);
@@ -533,6 +533,7 @@ function resolveMarkRef(ref) {
   if (!company) return [null, ''];
   if (kind === 'company') return [company, '修改標記'];
   if (kind === 'monthly-list') return [company, '月度待辦標記'];
+  if (kind === 'note') return [company, '記事本標記'];
   if (kind === 'monthly') return [((company['月度進度標記'] || {})[currentMonthKey()]) || null, (company['月度待辦'] || [])[+id]];
   if (kind === 'option') return [(company['選項'] || [])[+id], '修改標記'];
   if (kind === 'deadline') return [(company['截止日期'] || []).find(d => d.id === id), '修改標記'];
@@ -854,9 +855,10 @@ function renderTodo() {
 function calendarItemsByDate() {
   const days = {};
   const slot = key => (days[key] = days[key] || { todos: [], deadlines: [], logs: [] });
-  state.todos.forEach(t => { if (t['日期']) slot(t['日期']).todos.push(t); });
+  // 已完成的待辦和截止日期不放上行事曆（她說勾完的不用再看到）；要取消完成去待辦頁、客戶進度頁
+  state.todos.forEach(t => { if (t['日期'] && !t['完成']) slot(t['日期']).todos.push(t); });
   state.companies.forEach(c => {
-    (c['截止日期'] || []).forEach(d => { if (d['日期']) slot(d['日期']).deadlines.push({ company: c, d }); });
+    (c['截止日期'] || []).forEach(d => { if (d['日期'] && !d['完成']) slot(d['日期']).deadlines.push({ company: c, d }); });
     (c['催件紀錄'] || []).forEach(log => { if (log['時間']) slot(log['時間'].slice(0, 10)).logs.push({ company: c, log }); });
   });
   return days;
@@ -969,7 +971,7 @@ function renderCalendar() {
         ${['日', '一', '二', '三', '四', '五', '六'].map((w, i) => `<span class="cal-week${i === 0 || i === 6 ? ' weekend' : ''}">${w}</span>`).join('')}
         ${cells}
       </div>
-      <p class="cal-legend"><span><i class="dot todo"></i>待辦</span><span><i class="dot deadline"></i>截止日期</span><span><i class="dot urgent"></i>逾期／快到期</span><span><i class="dot done"></i>已完成</span><span>🐹 焙子印章＝已經過完的日子</span></p>
+      <p class="cal-legend"><span><i class="dot todo"></i>待辦</span><span><i class="dot deadline"></i>截止日期</span><span><i class="dot urgent"></i>逾期／快到期</span><span>勾完成的不會出現</span><span>🐹 焙子印章＝已經過完的日子</span></p>
     </section>
     <section class="card">
       <h2 class="card-title">📌 ${esc(friendlyDate(day))}${day === today ? '　今天' : ''}</h2>
@@ -1033,8 +1035,17 @@ function renderProgress() {
         </div>`).join('')
     : '<p class="empty">還沒有催件紀錄</p>';
 
+  // 記事本：每間公司一份自由文字，記目前做到哪裡（跟電腦版一樣存在公司物件的「記事本」）。
+  // 離開輸入框就自動存（data-change），按鈕是讓她安心用的
   return `
     ${companyPickerHtml()}
+    <section class="card">
+      <h2 class="card-title">📝 記事本（目前的進度）</h2>
+      <textarea id="note-input" class="textarea" style="min-height:110px" data-company="${esc(company.id)}" data-change="save-note"
+        placeholder="例如：11 月發票已收齊，等客戶回傳扣繳憑單">${esc(company['記事本'] || '')}</textarea>
+      <button class="btn primary" style="margin-top:8px" data-action="save-note">儲存記事本</button>
+      ${markHtml(company['記事本標記'], `note::${company.id}`)}
+    </section>
     <section class="card">
       <h2 class="card-title">📋 本月待辦（${monthKey}）
         <button class="btn small" data-action="manage-monthly">管理項目</button>
@@ -1900,6 +1911,10 @@ const actions = {
       render();
     });
   },
+  'save-note'() {
+    const el = $('#note-input');
+    if (el) saveNote(el, false);
+  },
   'save-intro'() {
     const text = $('#intro-input').value;
     if (text !== (state.settings['開頭本文'] || '')) state.settings['開頭本文標記'] = newMark();
@@ -2082,6 +2097,25 @@ document.addEventListener('click', e => {
   if (el && actions[el.dataset.action]) actions[el.dataset.action](el, e);
 });
 
+// 客戶記事本。quiet：離開輸入框自動存（change 事件），沒改就不做事，也不整頁重畫——
+// 她可能是點了別的按鈕才離開輸入框，這時重畫會把那個按鈕換掉，點擊就不見了
+function saveNote(el, quiet) {
+  const company = findCompany(el.dataset.company);
+  if (!company) return;
+  const text = el.value;
+  const changed = text !== (company['記事本'] || '');
+  if (changed) {
+    company['記事本'] = text;
+    company['記事本標記'] = newMark();
+    save();
+  }
+  el.defaultValue = text;   // render() 用 defaultValue 判斷有沒有還沒存的修改
+  if (quiet) return;
+  render();
+  toast('已儲存好囉～吱吱 🐹');
+}
+changes['save-note'] = el => saveNote(el, true);
+
 changes['no-contact-days'] = el => {
   state.settings['沒聯絡提醒天數'] = parseInt(el.value, 10);
   save();
@@ -2222,7 +2256,7 @@ const DISCLAIMER_VERSION = 1;
 const WELCOME_INTRO = [
   ['每日待辦', '記下今天要做的事，開機時提醒你'],
   ['行事曆', '待辦和各公司的截止日期排在月曆上，過完的日子會蓋上焙子印章'],
-  ['客戶進度', '每間公司每個月的待辦、截止日期和催件紀錄'],
+  ['客戶進度', '每間公司的記事本，和每個月的待辦、截止日期、催件紀錄'],
   ['產生文字', '一鍵產生要傳給客戶的 LINE 訊息'],
   ['手機、電腦自動同步', '在哪邊改，另一邊都會更新，誰改的也看得到'],
 ];
@@ -2276,6 +2310,7 @@ const TUTORIAL_SECTIONS = [
     '電腦版有獨立的「桌面行事曆」視窗，開機會自動出現，不想要可以在行事曆分頁取消勾選']],
   ['📊', '客戶進度', [
     '先選一間公司（電腦在左邊清單，手機點最上面的公司名稱）',
+    '記事本：隨手記這間公司目前做到哪裡，離開輸入框就會自動存',
     '本月待辦：每個月固定要做的事，按「管理項目」設定，做完就勾',
     '截止日期：選日期、輸入標題、按「新增」，完成就勾',
     '催件紀錄：聯絡過客戶就記一筆，會自動記下時間',
@@ -2423,6 +2458,9 @@ function render() {
   view.querySelectorAll('input.input[id], select.input[id]').forEach(el => { drafts[el.id] = el.value; });
   const focusedId = document.activeElement && view.contains(document.activeElement) ? document.activeElement.id : '';
   if (focusedId === 'intro-input') drafts[focusedId] = document.activeElement.value;
+  // 記事本打到一半還沒存（value 跟畫出來時的 defaultValue 不一樣），重畫後放回去；只放回同一間公司
+  const noteEl = view.querySelector('#note-input');
+  const noteDraft = noteEl && noteEl.value !== noteEl.defaultValue ? { company: noteEl.dataset.company, value: noteEl.value } : null;
   // 第一次開啟（或聲明改版）先跑歡迎流程；同意過但還沒連線碼／暱稱，才是原本的設定畫面
   const welcome = !hasAgreed();
   const setup = welcome || !sync.key || ui.setup || ui.nameSetup || !sync.name;
@@ -2433,6 +2471,8 @@ function render() {
     const el = document.getElementById(id);
     if (el) el.value = value;
   });
+  const newNoteEl = $('#note-input');
+  if (noteDraft && newNoteEl && newNoteEl.dataset.company === noteDraft.company) newNoteEl.value = noteDraft.value;
   if (focusedId) document.getElementById(focusedId)?.focus({ preventScroll: true });
   const showCopy = !setup && ui.tab === 'generate' && currentGenOption();
   view.classList.toggle('has-copybar', !!showCopy);
